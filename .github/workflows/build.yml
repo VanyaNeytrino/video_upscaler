@@ -1,0 +1,26 @@
+# .github/workflows/build.yml
+name: Build Multi-Platform
+on: [push]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.platform }}
+    
+    steps:
+    - uses: actions/checkout@v3
+    - uses: subosito/flutter-action@v2
+    
+    - name: Build Linux
+      if: matrix.platform == 'ubuntu-latest'
+      run: flutter build linux --release
+    
+    - name: Build Windows  
+      if: matrix.platform == 'windows-latest'
+      run: flutter build windows --release
+    
+    - name: Build macOS
+      if: matrix.platform == 'macos-latest'
+      run: flutter build macos --release
