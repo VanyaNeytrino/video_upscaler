@@ -31,7 +31,7 @@ jobs:
     
     # ИСПРАВЛЕННАЯ УСТАНОВКА FLUTTER
     - name: Setup Flutter (latest with Dart 3.7+)
-      shell: bash  # ПРИНУДИТЕЛЬНО ИСПОЛЬЗУЕМ BASH
+      shell: bash
       run: |
         echo "Installing Flutter with Dart SDK >= 3.7.0..."
         
@@ -68,7 +68,7 @@ jobs:
     
     # ПРОВЕРКА ВЕРСИЙ
     - name: Verify Flutter and Dart versions
-      shell: bash  # ПРИНУДИТЕЛЬНО ИСПОЛЬЗУЕМ BASH
+      shell: bash
       run: |
         echo "=== Flutter Version ==="
         flutter --version
@@ -120,7 +120,7 @@ jobs:
     
     # FLUTTER DEPENDENCIES
     - name: Get Flutter dependencies
-      shell: bash  # ПРИНУДИТЕЛЬНО ИСПОЛЬЗУЕМ BASH
+      shell: bash
       run: |
         echo "=== Getting Flutter dependencies ==="
         echo "Current directory: $(pwd)"
@@ -148,7 +148,7 @@ jobs:
     
     # BUILD APPLICATIONS
     - name: Build Flutter application
-      shell: bash  # ПРИНУДИТЕЛЬНО ИСПОЛЬЗУЕМ BASH
+      shell: bash
       run: |
         echo "Building Flutter application for ${{ matrix.platform }}..."
         
@@ -182,7 +182,7 @@ jobs:
     
     # VERIFY BUILD
     - name: Verify build results
-      shell: bash  # ПРИНУДИТЕЛЬНО ИСПОЛЬЗУЕМ BASH
+      shell: bash
       run: |
         echo "Verifying build results for ${{ matrix.platform }}..."
         
@@ -217,9 +217,9 @@ jobs:
           fi
         fi
     
-    # PACKAGE APPLICATIONS
+    # PACKAGE APPLICATIONS (исправленная версия)
     - name: Package application
-      shell: bash  # ПРИНУДИТЕЛЬНО ИСПОЛЬЗУЕМ BASH
+      shell: bash
       run: |
         echo "Packaging application for ${{ matrix.platform }}..."
         
@@ -234,11 +234,26 @@ jobs:
         elif [[ "${{ matrix.platform }}" == "windows" ]]; then
           echo "Creating Windows package..."
           cd build/windows/x64/runner/Release/
-          # Используем zip вместо 7z для совместимости
-          zip -r ../../../../../video_upscaler_windows_x64.zip ./*
+          
+          # Проверяем доступные команды архивации
+          echo "Available archiving tools:"
+          which 7z && echo "7z found" || echo "7z not found"
+          which zip && echo "zip found" || echo "zip not found"
+          
+          # Используем 7z (предустановлен в Windows runners)
+          if command -v 7z &> /dev/null; then
+            echo "Using 7z for packaging..."
+            7z a ../../../../../video_upscaler_windows_x64.zip ./* -r
+          else
+            echo "7z not found, creating directory copy..."
+            mkdir -p ../../../../../windows_package
+            cp -r ./* ../../../../../windows_package/
+          fi
+          
           cd ../../../../../
-          echo "✅ Created video_upscaler_windows_x64.zip"
-          ls -lh video_upscaler_windows_x64.zip
+          echo "✅ Windows package created"
+          ls -lh video_upscaler_windows_x64.* windows_package/ 2>/dev/null || echo "Checking created files:"
+          ls -la
           
         elif [[ "${{ matrix.platform }}" == "macos" ]]; then
           echo "Creating macOS package..."
@@ -249,7 +264,17 @@ jobs:
           ls -lh video_upscaler_macos.zip
         fi
     
-    # UPLOAD ARTIFACTS
+    # UPLOAD BUILD ARTIFACTS
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: video-upscaler-${{ matrix.platform }}-build
+        path: |
+          build/${{ matrix.flutter-platform }}/
+        retention-days: 30
+        if-no-files-found: warn
+    
+    # UPLOAD PACKAGED ARTIFACTS
     - name: Upload packaged artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -257,6 +282,7 @@ jobs:
         path: |
           video_upscaler_*.tar.gz
           video_upscaler_*.zip
+          windows_package/
         retention-days: 90
         if-no-files-found: warn
 
@@ -277,12 +303,21 @@ jobs:
         path: artifacts/
         merge-multiple: true
     
+    - name: List downloaded artifacts
+      shell: bash
+      run: |
+        echo "Downloaded artifacts:"
+        find artifacts/ -type f -ls 2>/dev/null || echo "No files found"
+        ls -la artifacts/ 2>/dev/null || echo "Artifacts directory not found"
+    
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        files: artifacts/*
+        files: |
+          artifacts/**/*
         generate_release_notes: true
         draft: false
         prerelease: false
+        fail_on_unmatched_files: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
