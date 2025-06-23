@@ -18,15 +18,20 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        lfs: true  # Важно для Git LFS файлов
+        lfs: true
     
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.27.1'
+        flutter-version: 'stable'  # ИСПРАВЛЕНО: используем latest stable
         channel: 'stable'
     
-    # КРИТИЧНО ДЛЯ LINUX: Установка GTK и зависимостей
+    # Проверяем версии
+    - name: Check Flutter version
+      run: |
+        flutter --version
+        dart --version
+    
     - name: Install Linux dependencies
       if: matrix.platform == 'linux'
       run: |
@@ -41,12 +46,8 @@ jobs:
           libsecret-1-dev \
           libjsoncpp-dev \
           clang
-        
-        # Проверяем что GTK найден
         pkg-config --modversion gtk+-3.0
-        pkg-config --cflags gtk+-3.0
     
-    # Для Windows: установка Visual Studio Build Tools
     - name: Setup Windows dependencies
       if: matrix.platform == 'windows'
       uses: microsoft/setup-msbuild@v1
@@ -65,7 +66,6 @@ jobs:
         fi
       shell: bash
     
-    # Загрузка артефактов
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
