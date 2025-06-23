@@ -29,7 +29,7 @@ jobs:
         lfs: true
         fetch-depth: 0
     
-    # ПРИНУДИТЕЛЬНАЯ УСТАНОВКА FLUTTER 3.27+ (содержит Dart 3.8+)
+    # ИСПРАВЛЕННАЯ УСТАНОВКА FLUTTER (с export PATH в том же шаге)
     - name: Setup Flutter (latest with Dart 3.7+)
       run: |
         echo "Installing Flutter with Dart SDK >= 3.7.0..."
@@ -39,19 +39,26 @@ jobs:
           wget -q -O flutter.tar.xz https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.27.1-stable.tar.xz
           tar xf flutter.tar.xz
           echo "$PWD/flutter/bin" >> $GITHUB_PATH
+          export PATH="$PWD/flutter/bin:$PATH"
           
         elif [[ "${{ runner.os }}" == "macOS" ]]; then
           echo "Installing Flutter 3.27.1 for macOS..."
           wget -q -O flutter.zip https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_3.27.1-stable.zip
           unzip -q flutter.zip
           echo "$PWD/flutter/bin" >> $GITHUB_PATH
+          export PATH="$PWD/flutter/bin:$PATH"
           
         elif [[ "${{ runner.os }}" == "Windows" ]]; then
           echo "Installing Flutter 3.27.1 for Windows..."
           curl -L -o flutter.zip https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.27.1-stable.zip
           7z x flutter.zip > NUL 2>&1
           echo "$PWD/flutter/bin" >> $GITHUB_PATH
+          export PATH="$PWD/flutter/bin:$PATH"
         fi
+        
+        # Проверяем что Flutter доступен
+        echo "Checking Flutter availability..."
+        which flutter || echo "Flutter not found in PATH"
         
         # Настройка Flutter
         flutter config --no-analytics
@@ -69,15 +76,14 @@ jobs:
         dart --version
         echo ""
         echo "=== Checking Dart SDK Compatibility ==="
-        # Проверяем что версия Dart >= 3.7.0
+        # Проверяем что версия Dart >= 3.6.0 (совместимо с pubspec.yaml)
         DART_VERSION=$(dart --version | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
         echo "Detected Dart version: $DART_VERSION"
         
-        if [[ $(echo "$DART_VERSION 3.7.0" | tr " " "\n" | sort -V | head -n1) == "3.7.0" ]]; then
-          echo "✅ Dart SDK version $DART_VERSION is compatible (>= 3.7.0)"
+        if [[ $(echo "$DART_VERSION 3.6.0" | tr " " "\n" | sort -V | head -n1) == "3.6.0" ]]; then
+          echo "✅ Dart SDK version $DART_VERSION is compatible (>= 3.6.0)"
         else
-          echo "❌ Dart SDK version $DART_VERSION is too old (< 3.7.0)"
-          echo "This may cause pubspec.yaml resolution issues"
+          echo "❌ Dart SDK version $DART_VERSION is too old (< 3.6.0)"
         fi
     
     # LINUX DEPENDENCIES
@@ -222,3 +228,30 @@ jobs:
           video_upscaler_*.zip
         retention-days: 90
         if-no-files-found: warn
+
+  # RELEASE JOB
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Download all package artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: video-upscaler-*-package
+        path: artifacts/
+        merge-multiple: true
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: artifacts/*
+        generate_release_notes: true
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
