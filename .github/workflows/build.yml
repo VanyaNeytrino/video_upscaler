@@ -1,5 +1,10 @@
-name: Build Multi-Platform
-on: [push]
+# .github/workflows/build.yml
+name: Build Multi-Platform with Installers
+on: 
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
   build:
@@ -8,30 +13,56 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux
+            flutter-platform: linux
           - os: windows-latest
             platform: windows
+            flutter-platform: windows
           - os: macos-latest
             platform: macos
+            flutter-platform: macos
     
     runs-on: ${{ matrix.os }}
     
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
       with:
         lfs: true
+        fetch-depth: 0
     
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
+    # ИСПРАВЛЕННАЯ УСТАНОВКА FLUTTER
+    - name: Setup Flutter (Fixed)
+      uses: subosito/flutter-action@v2.16.0  # Фиксированная версия
       with:
-        flutter-version: 'stable'  # ИСПРАВЛЕНО: используем latest stable
+        flutter-version: '3.24.3'  # Стабильная версия
         channel: 'stable'
+        architecture: x64
     
-    # Проверяем версии
-    - name: Check Flutter version
+    # Альтернативная установка Flutter (если action не работает)
+    - name: Install Flutter manually (fallback)
+      if: failure()
+      run: |
+        if [[ "${{ matrix.platform }}" == "linux" ]]; then
+          wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.24.3-stable.tar.xz
+          tar xf flutter_linux_*.tar.xz
+          echo "$PWD/flutter/bin" >> $GITHUB_PATH
+        elif [[ "${{ matrix.platform }}" == "macos" ]]; then
+          wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_3.24.3-stable.zip
+          unzip flutter_macos_*.zip
+          echo "$PWD/flutter/bin" >> $GITHUB_PATH
+        elif [[ "${{ matrix.platform }}" == "windows" ]]; then
+          Invoke-WebRequest -Uri "https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.24.3-stable.zip" -OutFile "flutter.zip"
+          Expand-Archive flutter.zip
+          echo "$PWD/flutter/bin" >> $env:GITHUB_PATH
+        fi
+      shell: bash
+    
+    - name: Verify Flutter installation
       run: |
         flutter --version
-        dart --version
+        flutter doctor -v
     
+    # LINUX DEPENDENCIES
     - name: Install Linux dependencies
       if: matrix.platform == 'linux'
       run: |
@@ -45,31 +76,190 @@ jobs:
           libblkid-dev \
           libsecret-1-dev \
           libjsoncpp-dev \
-          clang
-        pkg-config --modversion gtk+-3.0
+          clang \
+          libglu1-mesa-dev \
+          libegl1-mesa-dev \
+          libwayland-dev \
+          xvfb \
+          alien \
+          fakeroot
     
+    # WINDOWS DEPENDENCIES
     - name: Setup Windows dependencies
       if: matrix.platform == 'windows'
-      uses: microsoft/setup-msbuild@v1
+      run: |
+        choco install innosetup --version=6.2.2 -y
+        choco install wget -y
     
-    - name: Get dependencies
+    # MACOS DEPENDENCIES
+    - name: Setup macOS dependencies
+      if: matrix.platform == 'macos'
+      run: |
+        brew install create-dmg
+    
+    - name: Get Flutter dependencies
       run: flutter pub get
     
-    - name: Build for platform
+    - name: Run tests
+      run: flutter test
+    
+    # BUILD APPLICATIONS
+    - name: Build application
       run: |
-        if [ "${{ matrix.platform }}" = "linux" ]; then
+        if [[ "${{ matrix.platform }}" == "linux" ]]; then
           flutter build linux --release
-        elif [ "${{ matrix.platform }}" = "windows" ]; then
+        elif [[ "${{ matrix.platform }}" == "windows" ]]; then
           flutter build windows --release
-        elif [ "${{ matrix.platform }}" = "macos" ]; then
+        elif [[ "${{ matrix.platform }}" == "macos" ]]; then
           flutter build macos --release
         fi
       shell: bash
     
-    - name: Upload artifacts
+    # CREATE INSTALLERS
+    - name: Create Linux installer
+      if: matrix.platform == 'linux'
+      run: |
+        # Создание AppImage
+        wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+        chmod +x appimagetool-x86_64.AppImage
+        
+        # Создание структуры AppDir
+        mkdir -p AppDir/usr/bin
+        mkdir -p AppDir/usr/lib
+        mkdir -p AppDir/usr/share/applications
+        mkdir -p AppDir/usr/share/pixmaps
+        
+        # Копирование приложения
+        cp -r build/linux/x64/release/bundle/* AppDir/usr/bin/
+        
+        # Создание .desktop файла
+        cat > AppDir/video_upscaler.desktop << EOF
+        [Desktop Entry]
+        Type=Application
+        Name=Video Upscaler
+        Exec=video_upscaler
+        Icon=video_upscaler
+        Categories=AudioVideo;
+        EOF
+        
+        # Создание AppImage
+        ./appimagetool-x86_64.AppImage AppDir video_upscaler-linux-x86_64.AppImage
+        
+        # Создание DEB пакета
+        mkdir -p deb_package/DEBIAN
+        mkdir -p deb_package/opt/video_upscaler
+        mkdir -p deb_package/usr/share/applications
+        mkdir -p deb_package/usr/share/pixmaps
+        
+        # Копирование файлов
+        cp -r build/linux/x64/release/bundle/* deb_package/opt/video_upscaler/
+        
+        # Создание control файла
+        cat > deb_package/DEBIAN/control << EOF
+        Package: video-upscaler
+        Version: 1.0.0
+        Section: video
+        Priority: optional
+        Architecture: amd64
+        Maintainer: Your Name <your.email@example.com>
+        Description: AI-powered video upscaling application
+         Video Upscaler is a desktop application for AI-powered video upscaling
+         using waifu2x and FFmpeg.
+        EOF
+        
+        # Создание DEB
+        dpkg-deb --build deb_package video_upscaler_1.0.0_amd64.deb
+    
+    - name: Create Windows installer
+      if: matrix.platform == 'windows'
+      run: |
+        # Создание Inno Setup скрипта
+        cat > installer.iss << 'EOF'
+        #define MyAppName "Video Upscaler"
+        #define MyAppVersion "1.0.0"
+        #define MyAppPublisher "Your Company"
+        #define MyAppURL "https://github.com/VanyaNeytrino/video_upscaler"
+        #define MyAppExeName "video_upscaler.exe"
+        
+        [Setup]
+        AppId={{12345678-1234-5678-90AB-123456789012}
+        AppName={#MyAppName}
+        AppVersion={#MyAppVersion}
+        AppPublisher={#MyAppPublisher}
+        AppPublisherURL={#MyAppURL}
+        AppSupportURL={#MyAppURL}
+        AppUpdatesURL={#MyAppURL}
+        DefaultDirName={autopf}\{#MyAppName}
+        DefaultGroupName={#MyAppName}
+        OutputBaseFilename=video_upscaler_setup_v{#MyAppVersion}
+        OutputDir=.
+        Compression=lzma
+        SolidCompression=yes
+        WizardStyle=modern
+        PrivilegesRequired=lowest
+        
+        [Languages]
+        Name: "english"; MessagesFile: "compiler:Default.isl"
+        Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+        
+        [Tasks]
+        Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+        
+        [Files]
+        Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+        
+        [Icons]
+        Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+        Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+        
+        [Run]
+        Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+        EOF
+        
+        # Компиляция installer
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+      shell: powershell
+    
+    - name: Create macOS installer
+      if: matrix.platform == 'macos'
+      run: |
+        # Подписание приложения (опционально для локальной разработки)
+        # codesign --force --deep --sign - build/macos/Build/Products/Release/video_upscaler.app
+        
+        # Создание DMG
+        create-dmg \
+          --volname "Video Upscaler" \
+          --volicon "macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png" \
+          --window-pos 200 120 \
+          --window-size 600 300 \
+          --icon-size 100 \
+          --icon "video_upscaler.app" 175 120 \
+          --hide-extension "video_upscaler.app" \
+          --app-drop-link 425 120 \
+          "video_upscaler_macos.dmg" \
+          "build/macos/Build/Products/Release/"
+    
+    # UPLOAD ARTIFACTS
+    - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
         name: video-upscaler-${{ matrix.platform }}
         path: |
-          build/${{ matrix.platform }}/*/bundle/
-          build/${{ matrix.platform }}/*/Release/
+          build/${{ matrix.flutter-platform }}/
+          *.AppImage
+          *.deb
+          *.exe
+          *.dmg
+        retention-days: 30
+    
+    # UPLOAD INSTALLERS
+    - name: Upload installers
+      uses: actions/upload-artifact@v4
+      with:
+        name: installers-${{ matrix.platform }}
+        path: |
+          *.AppImage
+          *.deb
+          video_upscaler_setup_*.exe
+          *.dmg
+        retention-days: 90
