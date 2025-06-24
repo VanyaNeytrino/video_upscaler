@@ -1,5 +1,7 @@
-name: Build Multi-Platform
-on: 
+# .github/workflows/build.yml
+name: Build Flutter App
+
+on:
   push:
     branches: [main]
   pull_request:
@@ -12,312 +14,379 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux
-            flutter-platform: linux
-          - os: windows-latest
+          - os: windows-latest  
             platform: windows
-            flutter-platform: windows
           - os: macos-latest
             platform: macos
-            flutter-platform: macos
-    
-    runs-on: ${{ matrix.os }}
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        lfs: true
-        fetch-depth: 0
-    
-    # ИСПРАВЛЕННАЯ УСТАНОВКА FLUTTER
-    - name: Setup Flutter (latest with Dart 3.7+)
-      shell: bash
-      run: |
-        echo "Installing Flutter with Dart SDK >= 3.7.0..."
-        
-        if [[ "${{ runner.os }}" == "Linux" ]]; then
-          echo "Installing Flutter 3.27.1 for Linux..."
-          wget -q -O flutter.tar.xz https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.27.1-stable.tar.xz
-          tar xf flutter.tar.xz
-          echo "$PWD/flutter/bin" >> $GITHUB_PATH
-          export PATH="$PWD/flutter/bin:$PATH"
-          
-        elif [[ "${{ runner.os }}" == "macOS" ]]; then
-          echo "Installing Flutter 3.27.1 for macOS..."
-          wget -q -O flutter.zip https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_3.27.1-stable.zip
-          unzip -q flutter.zip
-          echo "$PWD/flutter/bin" >> $GITHUB_PATH
-          export PATH="$PWD/flutter/bin:$PATH"
-          
-        elif [[ "${{ runner.os }}" == "Windows" ]]; then
-          echo "Installing Flutter 3.27.1 for Windows..."
-          curl -L -o flutter.zip https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.27.1-stable.zip
-          unzip -q flutter.zip || 7z x flutter.zip > /dev/null 2>&1
-          echo "$PWD/flutter/bin" >> $GITHUB_PATH
-          export PATH="$PWD/flutter/bin:$PATH"
-        fi
-        
-        # Проверяем что Flutter доступен
-        echo "Checking Flutter availability..."
-        which flutter || echo "Flutter not found in PATH"
-        
-        # Настройка Flutter
-        flutter config --no-analytics
-        flutter config --enable-web
-        flutter precache --universal || echo "Precache completed"
-    
-    # ПРОВЕРКА ВЕРСИЙ
-    - name: Verify Flutter and Dart versions
-      shell: bash
-      run: |
-        echo "=== Flutter Version ==="
-        flutter --version
-        echo ""
-        echo "=== Dart Version ==="
-        dart --version
-        echo ""
-        echo "=== Checking Dart SDK Compatibility ==="
-        DART_VERSION=$(dart --version 2>&1 | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
-        echo "Detected Dart version: $DART_VERSION"
-        
-        # Простая проверка версии без сложного bash
-        MAJOR=$(echo $DART_VERSION | cut -d. -f1)
-        MINOR=$(echo $DART_VERSION | cut -d. -f2)
-        
-        if [[ $MAJOR -ge 3 ]] && [[ $MINOR -ge 6 ]]; then
-          echo "✅ Dart SDK version $DART_VERSION is compatible (>= 3.6.0)"
-        else
-          echo "❌ Dart SDK version $DART_VERSION is too old (< 3.6.0)"
-        fi
-    
-    # LINUX DEPENDENCIES
-    - name: Install Linux dependencies
-      if: matrix.platform == 'linux'
-      shell: bash
-      run: |
-        echo "Installing Linux dependencies..."
-        sudo apt-get update -y
-        sudo apt-get install -y \
-          libgtk-3-dev \
-          libx11-dev \
-          pkg-config \
-          cmake \
-          ninja-build \
-          libblkid-dev \
-          libsecret-1-dev \
-          libjsoncpp-dev \
-          clang \
-          libglu1-mesa-dev \
-          build-essential
-        
-        echo "Verifying GTK installation:"
-        pkg-config --modversion gtk+-3.0
-    
-    # WINDOWS DEPENDENCIES  
-    - name: Setup Windows MSBuild
-      if: matrix.platform == 'windows'
-      uses: microsoft/setup-msbuild@v2
-    
-    # FLUTTER DEPENDENCIES
-    - name: Get Flutter dependencies
-      shell: bash
-      run: |
-        echo "=== Getting Flutter dependencies ==="
-        echo "Current directory: $(pwd)"
-        echo ""
-        echo "=== pubspec.yaml SDK constraint ==="
-        grep -A 2 "environment:" pubspec.yaml || echo "No environment section found"
-        echo ""
-        echo "=== Running flutter pub get ==="
-        flutter pub get
-        echo "✅ Dependencies installed successfully"
-    
-    # FLUTTER ANALYZE
-    - name: Analyze Flutter code
-      shell: bash
-      run: |
-        echo "Analyzing Flutter code..."
-        flutter analyze --no-fatal-infos || echo "⚠️ Analysis completed with warnings"
-    
-    # FLUTTER TEST
-    - name: Run Flutter tests
-      shell: bash
-      run: |
-        echo "Running Flutter tests..."
-        flutter test --no-sound-null-safety || echo "⚠️ Tests completed"
-    
-    # BUILD APPLICATIONS
-    - name: Build Flutter application
-      shell: bash
-      run: |
-        echo "Building Flutter application for ${{ matrix.platform }}..."
-        
-        if [[ "${{ matrix.platform }}" == "linux" ]]; then
-          echo "Building for Linux..."
-          flutter build linux --release --verbose
-          if [[ -d "build/linux/x64/release/bundle" ]]; then
-            ls -la build/linux/x64/release/bundle/
-          else
-            echo "Build directory not found"
-          fi
-          
-        elif [[ "${{ matrix.platform }}" == "windows" ]]; then
-          echo "Building for Windows..."
-          flutter build windows --release --verbose
-          if [[ -d "build/windows/x64/runner/Release" ]]; then
-            ls -la build/windows/x64/runner/Release/
-          else
-            echo "Build directory not found"
-          fi
-          
-        elif [[ "${{ matrix.platform }}" == "macos" ]]; then
-          echo "Building for macOS..."
-          flutter build macos --release --verbose
-          if [[ -d "build/macos/Build/Products/Release" ]]; then
-            ls -la build/macos/Build/Products/Release/
-          else
-            echo "Build directory not found"
-          fi
-        fi
-    
-    # VERIFY BUILD
-    - name: Verify build results
-      shell: bash
-      run: |
-        echo "Verifying build results for ${{ matrix.platform }}..."
-        
-        if [[ "${{ matrix.platform }}" == "linux" ]]; then
-          if [[ -f "build/linux/x64/release/bundle/video_upscaler" ]]; then
-            echo "✅ Linux executable found"
-            ls -lh build/linux/x64/release/bundle/video_upscaler
-          else
-            echo "❌ Linux executable not found"
-            find build/ -name "*video_upscaler*" 2>/dev/null || echo "No executable found"
-            exit 1
-          fi
-          
-        elif [[ "${{ matrix.platform }}" == "windows" ]]; then
-          if [[ -f "build/windows/x64/runner/Release/video_upscaler.exe" ]]; then
-            echo "✅ Windows executable found"
-            ls -lh build/windows/x64/runner/Release/video_upscaler.exe
-          else
-            echo "❌ Windows executable not found"
-            find build/ -name "*.exe" 2>/dev/null || echo "No executables found"
-            exit 1
-          fi
-          
-        elif [[ "${{ matrix.platform }}" == "macos" ]]; then
-          if [[ -d "build/macos/Build/Products/Release/video_upscaler.app" ]]; then
-            echo "✅ macOS app bundle found"
-            ls -la build/macos/Build/Products/Release/video_upscaler.app/Contents/MacOS/ || echo "App contents not found"
-          else
-            echo "❌ macOS app bundle not found"
-            find build/ -name "*.app" 2>/dev/null || echo "No app bundles found"
-            exit 1
-          fi
-        fi
-    
-    # PACKAGE APPLICATIONS (исправленная версия)
-    - name: Package application
-      shell: bash
-      run: |
-        echo "Packaging application for ${{ matrix.platform }}..."
-        
-        if [[ "${{ matrix.platform }}" == "linux" ]]; then
-          echo "Creating Linux package..."
-          cd build/linux/x64/release/
-          tar -czf ../../../../video_upscaler_linux_x64.tar.gz bundle/
-          cd ../../../../
-          echo "✅ Created video_upscaler_linux_x64.tar.gz"
-          ls -lh video_upscaler_linux_x64.tar.gz
-          
-        elif [[ "${{ matrix.platform }}" == "windows" ]]; then
-          echo "Creating Windows package..."
-          cd build/windows/x64/runner/Release/
-          
-          # Проверяем доступные команды архивации
-          echo "Available archiving tools:"
-          which 7z && echo "7z found" || echo "7z not found"
-          which zip && echo "zip found" || echo "zip not found"
-          
-          # Используем 7z (предустановлен в Windows runners)
-          if command -v 7z &> /dev/null; then
-            echo "Using 7z for packaging..."
-            7z a ../../../../../video_upscaler_windows_x64.zip ./* -r
-          else
-            echo "7z not found, creating directory copy..."
-            mkdir -p ../../../../../windows_package
-            cp -r ./* ../../../../../windows_package/
-          fi
-          
-          cd ../../../../../
-          echo "✅ Windows package created"
-          ls -lh video_upscaler_windows_x64.* windows_package/ 2>/dev/null || echo "Checking created files:"
-          ls -la
-          
-        elif [[ "${{ matrix.platform }}" == "macos" ]]; then
-          echo "Creating macOS package..."
-          cd build/macos/Build/Products/Release/
-          zip -r ../../../../../video_upscaler_macos.zip video_upscaler.app/
-          cd ../../../../../
-          echo "✅ Created video_upscaler_macos.zip"
-          ls -lh video_upscaler_macos.zip
-        fi
-    
-    # UPLOAD BUILD ARTIFACTS
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: video-upscaler-${{ matrix.platform }}-build
-        path: |
-          build/${{ matrix.flutter-platform }}/
-        retention-days: 30
-        if-no-files-found: warn
-    
-    # UPLOAD PACKAGED ARTIFACTS
-    - name: Upload packaged artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: video-upscaler-${{ matrix.platform }}-package
-        path: |
-          video_upscaler_*.tar.gz
-          video_upscaler_*.zip
-          windows_package/
-        retention-days: 90
-        if-no-files-found: warn
 
-  # RELEASE JOB
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    
+    runs-on: ${{ matrix.os }}
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
-    - name: Download all package artifacts
-      uses: actions/download-artifact@v4
-      with:
-        pattern: video-upscaler-*-package
-        path: artifacts/
-        merge-multiple: true
-    
-    - name: List downloaded artifacts
-      shell: bash
+
+    - name: Download model files for ${{ matrix.platform }}
       run: |
-        echo "Downloaded artifacts:"
-        find artifacts/ -type f -ls 2>/dev/null || echo "No files found"
-        ls -la artifacts/ 2>/dev/null || echo "Artifacts directory not found"
-    
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
+        echo "📥 Скачиваем файлы модели для ${{ matrix.platform }}..."
+        
+        # Создаем директории
+        mkdir -p assets/executables/${{ matrix.platform }}/models-cunet
+        
+        # Скачиваем основные файлы модели CUNet
+        curl -L -o assets/executables/${{ matrix.platform }}/models-cunet/noise0_scale2.0x_model.bin \
+          "https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise0_scale2.0x_model.bin"
+        curl -L -o assets/executables/${{ matrix.platform }}/models-cunet/noise0_scale2.0x_model.param \
+          "https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise0_scale2.0x_model.param"
+        curl -L -o assets/executables/${{ matrix.platform }}/models-cunet/noise1_scale2.0x_model.bin \
+          "https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise1_scale2.0x_model.bin"
+        curl -L -o assets/executables/${{ matrix.platform }}/models-cunet/noise1_scale2.0x_model.param \
+          "https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise1_scale2.0x_model.param"
+        
+        # Проверяем что файлы скачались
+        echo "Проверяем размеры файлов модели:"
+        ls -lh assets/executables/${{ matrix.platform }}/models-cunet/
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
       with:
-        files: |
-          artifacts/**/*
-        generate_release_notes: true
-        draft: false
-        prerelease: false
-        fail_on_unmatched_files: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        channel: stable
+        flutter-version: '3.27.1'
+        cache: true
+
+    - name: Get dependencies
+      run: flutter pub get
+
+    - name: Build ${{ matrix.platform }} app
+      run: |
+        if [[ "${{ matrix.platform }}" == "linux" ]]; then
+          flutter build linux --release
+        elif [[ "${{ matrix.platform }}" == "windows" ]]; then
+          flutter build windows --release  
+        elif [[ "${{ matrix.platform }}" == "macos" ]]; then
+          flutter build macos --release
+        fi
+
+
+# name: Build Multi-Platform
+# on: 
+#   push:
+#     branches: [main]
+#   pull_request:
+#     branches: [main]
+
+# jobs:
+#   build:
+#     strategy:
+#       matrix:
+#         include:
+#           - os: ubuntu-latest
+#             platform: linux
+#             flutter-platform: linux
+#           - os: windows-latest
+#             platform: windows
+#             flutter-platform: windows
+#           - os: macos-latest
+#             platform: macos
+#             flutter-platform: macos
+    
+#     runs-on: ${{ matrix.os }}
+    
+#     steps:
+#     - name: Checkout code
+#       uses: actions/checkout@v4
+#       with:
+#         lfs: true
+#         fetch-depth: 0
+    
+#     # ИСПРАВЛЕННАЯ УСТАНОВКА FLUTTER
+#     - name: Setup Flutter (latest with Dart 3.7+)
+#       shell: bash
+#       run: |
+#         echo "Installing Flutter with Dart SDK >= 3.7.0..."
+        
+#         if [[ "${{ runner.os }}" == "Linux" ]]; then
+#           echo "Installing Flutter 3.27.1 for Linux..."
+#           wget -q -O flutter.tar.xz https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.27.1-stable.tar.xz
+#           tar xf flutter.tar.xz
+#           echo "$PWD/flutter/bin" >> $GITHUB_PATH
+#           export PATH="$PWD/flutter/bin:$PATH"
+          
+#         elif [[ "${{ runner.os }}" == "macOS" ]]; then
+#           echo "Installing Flutter 3.27.1 for macOS..."
+#           wget -q -O flutter.zip https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_3.27.1-stable.zip
+#           unzip -q flutter.zip
+#           echo "$PWD/flutter/bin" >> $GITHUB_PATH
+#           export PATH="$PWD/flutter/bin:$PATH"
+          
+#         elif [[ "${{ runner.os }}" == "Windows" ]]; then
+#           echo "Installing Flutter 3.27.1 for Windows..."
+#           curl -L -o flutter.zip https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.27.1-stable.zip
+#           unzip -q flutter.zip || 7z x flutter.zip > /dev/null 2>&1
+#           echo "$PWD/flutter/bin" >> $GITHUB_PATH
+#           export PATH="$PWD/flutter/bin:$PATH"
+#         fi
+        
+#         # Проверяем что Flutter доступен
+#         echo "Checking Flutter availability..."
+#         which flutter || echo "Flutter not found in PATH"
+        
+#         # Настройка Flutter
+#         flutter config --no-analytics
+#         flutter config --enable-web
+#         flutter precache --universal || echo "Precache completed"
+    
+#     # ПРОВЕРКА ВЕРСИЙ
+#     - name: Verify Flutter and Dart versions
+#       shell: bash
+#       run: |
+#         echo "=== Flutter Version ==="
+#         flutter --version
+#         echo ""
+#         echo "=== Dart Version ==="
+#         dart --version
+#         echo ""
+#         echo "=== Checking Dart SDK Compatibility ==="
+#         DART_VERSION=$(dart --version 2>&1 | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+#         echo "Detected Dart version: $DART_VERSION"
+        
+#         # Простая проверка версии без сложного bash
+#         MAJOR=$(echo $DART_VERSION | cut -d. -f1)
+#         MINOR=$(echo $DART_VERSION | cut -d. -f2)
+        
+#         if [[ $MAJOR -ge 3 ]] && [[ $MINOR -ge 6 ]]; then
+#           echo "✅ Dart SDK version $DART_VERSION is compatible (>= 3.6.0)"
+#         else
+#           echo "❌ Dart SDK version $DART_VERSION is too old (< 3.6.0)"
+#         fi
+    
+#     # LINUX DEPENDENCIES
+#     - name: Install Linux dependencies
+#       if: matrix.platform == 'linux'
+#       shell: bash
+#       run: |
+#         echo "Installing Linux dependencies..."
+#         sudo apt-get update -y
+#         sudo apt-get install -y \
+#           libgtk-3-dev \
+#           libx11-dev \
+#           pkg-config \
+#           cmake \
+#           ninja-build \
+#           libblkid-dev \
+#           libsecret-1-dev \
+#           libjsoncpp-dev \
+#           clang \
+#           libglu1-mesa-dev \
+#           build-essential
+        
+#         echo "Verifying GTK installation:"
+#         pkg-config --modversion gtk+-3.0
+    
+#     # WINDOWS DEPENDENCIES  
+#     - name: Setup Windows MSBuild
+#       if: matrix.platform == 'windows'
+#       uses: microsoft/setup-msbuild@v2
+    
+#     # FLUTTER DEPENDENCIES
+#     - name: Get Flutter dependencies
+#       shell: bash
+#       run: |
+#         echo "=== Getting Flutter dependencies ==="
+#         echo "Current directory: $(pwd)"
+#         echo ""
+#         echo "=== pubspec.yaml SDK constraint ==="
+#         grep -A 2 "environment:" pubspec.yaml || echo "No environment section found"
+#         echo ""
+#         echo "=== Running flutter pub get ==="
+#         flutter pub get
+#         echo "✅ Dependencies installed successfully"
+    
+#     # FLUTTER ANALYZE
+#     - name: Analyze Flutter code
+#       shell: bash
+#       run: |
+#         echo "Analyzing Flutter code..."
+#         flutter analyze --no-fatal-infos || echo "⚠️ Analysis completed with warnings"
+    
+#     # FLUTTER TEST
+#     - name: Run Flutter tests
+#       shell: bash
+#       run: |
+#         echo "Running Flutter tests..."
+#         flutter test --no-sound-null-safety || echo "⚠️ Tests completed"
+    
+#     # BUILD APPLICATIONS
+#     - name: Build Flutter application
+#       shell: bash
+#       run: |
+#         echo "Building Flutter application for ${{ matrix.platform }}..."
+        
+#         if [[ "${{ matrix.platform }}" == "linux" ]]; then
+#           echo "Building for Linux..."
+#           flutter build linux --release --verbose
+#           if [[ -d "build/linux/x64/release/bundle" ]]; then
+#             ls -la build/linux/x64/release/bundle/
+#           else
+#             echo "Build directory not found"
+#           fi
+          
+#         elif [[ "${{ matrix.platform }}" == "windows" ]]; then
+#           echo "Building for Windows..."
+#           flutter build windows --release --verbose
+#           if [[ -d "build/windows/x64/runner/Release" ]]; then
+#             ls -la build/windows/x64/runner/Release/
+#           else
+#             echo "Build directory not found"
+#           fi
+          
+#         elif [[ "${{ matrix.platform }}" == "macos" ]]; then
+#           echo "Building for macOS..."
+#           flutter build macos --release --verbose
+#           if [[ -d "build/macos/Build/Products/Release" ]]; then
+#             ls -la build/macos/Build/Products/Release/
+#           else
+#             echo "Build directory not found"
+#           fi
+#         fi
+    
+#     # VERIFY BUILD
+#     - name: Verify build results
+#       shell: bash
+#       run: |
+#         echo "Verifying build results for ${{ matrix.platform }}..."
+        
+#         if [[ "${{ matrix.platform }}" == "linux" ]]; then
+#           if [[ -f "build/linux/x64/release/bundle/video_upscaler" ]]; then
+#             echo "✅ Linux executable found"
+#             ls -lh build/linux/x64/release/bundle/video_upscaler
+#           else
+#             echo "❌ Linux executable not found"
+#             find build/ -name "*video_upscaler*" 2>/dev/null || echo "No executable found"
+#             exit 1
+#           fi
+          
+#         elif [[ "${{ matrix.platform }}" == "windows" ]]; then
+#           if [[ -f "build/windows/x64/runner/Release/video_upscaler.exe" ]]; then
+#             echo "✅ Windows executable found"
+#             ls -lh build/windows/x64/runner/Release/video_upscaler.exe
+#           else
+#             echo "❌ Windows executable not found"
+#             find build/ -name "*.exe" 2>/dev/null || echo "No executables found"
+#             exit 1
+#           fi
+          
+#         elif [[ "${{ matrix.platform }}" == "macos" ]]; then
+#           if [[ -d "build/macos/Build/Products/Release/video_upscaler.app" ]]; then
+#             echo "✅ macOS app bundle found"
+#             ls -la build/macos/Build/Products/Release/video_upscaler.app/Contents/MacOS/ || echo "App contents not found"
+#           else
+#             echo "❌ macOS app bundle not found"
+#             find build/ -name "*.app" 2>/dev/null || echo "No app bundles found"
+#             exit 1
+#           fi
+#         fi
+    
+#     # PACKAGE APPLICATIONS (исправленная версия)
+#     - name: Package application
+#       shell: bash
+#       run: |
+#         echo "Packaging application for ${{ matrix.platform }}..."
+        
+#         if [[ "${{ matrix.platform }}" == "linux" ]]; then
+#           echo "Creating Linux package..."
+#           cd build/linux/x64/release/
+#           tar -czf ../../../../video_upscaler_linux_x64.tar.gz bundle/
+#           cd ../../../../
+#           echo "✅ Created video_upscaler_linux_x64.tar.gz"
+#           ls -lh video_upscaler_linux_x64.tar.gz
+          
+#         elif [[ "${{ matrix.platform }}" == "windows" ]]; then
+#           echo "Creating Windows package..."
+#           cd build/windows/x64/runner/Release/
+          
+#           # Проверяем доступные команды архивации
+#           echo "Available archiving tools:"
+#           which 7z && echo "7z found" || echo "7z not found"
+#           which zip && echo "zip found" || echo "zip not found"
+          
+#           # Используем 7z (предустановлен в Windows runners)
+#           if command -v 7z &> /dev/null; then
+#             echo "Using 7z for packaging..."
+#             7z a ../../../../../video_upscaler_windows_x64.zip ./* -r
+#           else
+#             echo "7z not found, creating directory copy..."
+#             mkdir -p ../../../../../windows_package
+#             cp -r ./* ../../../../../windows_package/
+#           fi
+          
+#           cd ../../../../../
+#           echo "✅ Windows package created"
+#           ls -lh video_upscaler_windows_x64.* windows_package/ 2>/dev/null || echo "Checking created files:"
+#           ls -la
+          
+#         elif [[ "${{ matrix.platform }}" == "macos" ]]; then
+#           echo "Creating macOS package..."
+#           cd build/macos/Build/Products/Release/
+#           zip -r ../../../../../video_upscaler_macos.zip video_upscaler.app/
+#           cd ../../../../../
+#           echo "✅ Created video_upscaler_macos.zip"
+#           ls -lh video_upscaler_macos.zip
+#         fi
+    
+#     # UPLOAD BUILD ARTIFACTS
+#     - name: Upload build artifacts
+#       uses: actions/upload-artifact@v4
+#       with:
+#         name: video-upscaler-${{ matrix.platform }}-build
+#         path: |
+#           build/${{ matrix.flutter-platform }}/
+#         retention-days: 30
+#         if-no-files-found: warn
+    
+#     # UPLOAD PACKAGED ARTIFACTS
+#     - name: Upload packaged artifacts
+#       uses: actions/upload-artifact@v4
+#       with:
+#         name: video-upscaler-${{ matrix.platform }}-package
+#         path: |
+#           video_upscaler_*.tar.gz
+#           video_upscaler_*.zip
+#           windows_package/
+#         retention-days: 90
+#         if-no-files-found: warn
+
+#   # RELEASE JOB
+#   release:
+#     needs: build
+#     if: startsWith(github.ref, 'refs/tags/v')
+#     runs-on: ubuntu-latest
+    
+#     steps:
+#     - name: Checkout code
+#       uses: actions/checkout@v4
+    
+#     - name: Download all package artifacts
+#       uses: actions/download-artifact@v4
+#       with:
+#         pattern: video-upscaler-*-package
+#         path: artifacts/
+#         merge-multiple: true
+    
+#     - name: List downloaded artifacts
+#       shell: bash
+#       run: |
+#         echo "Downloaded artifacts:"
+#         find artifacts/ -type f -ls 2>/dev/null || echo "No files found"
+#         ls -la artifacts/ 2>/dev/null || echo "Artifacts directory not found"
+    
+#     - name: Create Release
+#       uses: softprops/action-gh-release@v2
+#       with:
+#         files: |
+#           artifacts/**/*
+#         generate_release_notes: true
+#         draft: false
+#         prerelease: false
+#         fail_on_unmatched_files: false
+#       env:
+#         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

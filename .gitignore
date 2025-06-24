@@ -43,3 +43,14 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Альтернативно можно исключить все файлы модели:
+assets/executables/linux/models-cunet/
+assets/executables/linux/models-upconv_7_anime_style_art_rgb/
+assets/executables/linux/models-upconv_7_photo/
+assets/executables/macos/models-cunet/
+assets/executables/macos/models-upconv_7_anime_style_art_rgb/
+assets/executables/macos/models-upconv_7_photo/
+assets/executables/windows/models-cunet/
+assets/executables/windows/models-upconv_7_anime_style_art_rgb/
+assets/executables/windows/models-upconv_7_photo/

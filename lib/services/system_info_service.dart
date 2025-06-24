@@ -346,7 +346,7 @@ class SystemInfoService {
   // Остальные методы остаются без изменений
   static Future<bool> _checkVulkanSupport() async {
     try {
-      final executableManager = ExecutableManager();
+      final executableManager = ExecutableManager.instance;
 
       if (!await _isExecutableManagerInitialized()) {
         return false;
@@ -375,7 +375,7 @@ class SystemInfoService {
 
   static Future<List<String>> _getAvailableGPUs() async {
     try {
-      final executableManager = ExecutableManager();
+      final executableManager = ExecutableManager.instance;
 
       if (!await _isExecutableManagerInitialized()) {
         return [];
@@ -412,7 +412,7 @@ class SystemInfoService {
 
   static Future<bool> _isExecutableManagerInitialized() async {
     try {
-      final executableManager = ExecutableManager();
+      final executableManager = ExecutableManager.instance;
       final waifu2xPath = executableManager.waifu2xPath;
       final ffmpegPath = executableManager.ffmpegPath;
       return await File(waifu2xPath).exists() &&
@@ -431,7 +431,7 @@ class SystemInfoService {
 
   static Future<Map<String, dynamic>> getSystemDetails() async {
     final capabilities = await analyzeSystem();
-    final executableManager = ExecutableManager();
+    final executableManager = ExecutableManager.instance;
 
     Map<String, dynamic> details = {
       'platform': capabilities.platform,

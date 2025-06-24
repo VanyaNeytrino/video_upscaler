@@ -29,7 +29,7 @@ class VideoProcessingService {
 
     try {
       _updateProgress('Проверка инициализации ExecutableManager...', 0.0);
-      final executableManager = ExecutableManager();
+      final executableManager = ExecutableManager.instance;
 
       if (!await executableManager.validateInstallation()) {
         throw Exception(
@@ -89,7 +89,7 @@ class VideoProcessingService {
 
   // Анализ входного видео для оптимизации
   Future<Map<String, dynamic>> _analyzeInputVideo(String videoPath) async {
-    final executableManager = ExecutableManager();
+    final executableManager = ExecutableManager.instance;
     final ffmpegPath = executableManager.ffmpegPath;
 
     print('🎬 Анализ видео: $videoPath');
@@ -353,7 +353,7 @@ class VideoProcessingService {
   // Оптимизированное извлечение кадров
   Future<void> _extractFrames(
       String videoPath, String framesDir, Map<String, dynamic> params) async {
-    final executableManager = ExecutableManager();
+    final executableManager = ExecutableManager.instance;
     final ffmpegPath = executableManager.ffmpegPath;
     final ffmpegParams = params['ffmpeg'] as Map<String, dynamic>;
 
@@ -379,7 +379,7 @@ class VideoProcessingService {
   }
 
   Future<bool> _extractAudio(String videoPath, String audioPath) async {
-    final executableManager = ExecutableManager();
+    final executableManager = ExecutableManager.instance;
     final ffmpegPath = executableManager.ffmpegPath;
 
     print('Извлечение аудио: $videoPath -> $audioPath');
@@ -419,7 +419,7 @@ class VideoProcessingService {
     SystemCapabilities systemInfo,
     Map<String, dynamic> optimizedParams,
   ) async {
-    final executableManager = ExecutableManager();
+    final executableManager = ExecutableManager.instance;
     final waifu2xPath = executableManager.waifu2xPath;
     final waifu2xParams = optimizedParams['waifu2x'] as Map<String, dynamic>;
 
@@ -964,7 +964,7 @@ class VideoProcessingService {
     bool hasAudio,
     Map<String, dynamic> optimizedParams,
   ) async {
-    final executableManager = ExecutableManager();
+    final executableManager = ExecutableManager.instance;
     final ffmpegPath = executableManager.ffmpegPath;
 
     print('🎬 УПРОЩЕННАЯ сборка видео: $scaledDir -> ${config.outputPath}');
@@ -1060,7 +1060,7 @@ class VideoProcessingService {
   // АЛЬТЕРНАТИВНЫЙ метод сборки
   Future<String> _assembleVideoAlternative(
       String scaledDir, ProcessingConfig config) async {
-    final executableManager = ExecutableManager();
+    final executableManager = ExecutableManager.instance;
     final ffmpegPath = executableManager.ffmpegPath;
 
     print('🔄 АЛЬТЕРНАТИВНАЯ сборка видео (метод из Reddit)');

@@ -116,7 +116,7 @@ class _VideoUpscalerHomeState extends State<VideoUpscalerHome>
         _progressPercentage = 10.0;
       });
 
-      await ExecutableManager().initializeExecutables();
+      await ExecutableManager.instance.initializeExecutables();
 
       setState(() {
         _currentProgress = 'Анализ системы и железа...';
