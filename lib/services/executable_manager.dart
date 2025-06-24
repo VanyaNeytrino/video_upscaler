@@ -1,209 +1,341 @@
 import 'dart:io';
-import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
+import 'package:http/http.dart'
+    as http; // ДОБАВЬТЕ В pubspec.yaml: http: ^1.1.0
 
 class ExecutableManager {
-  static final ExecutableManager _instance = ExecutableManager._internal();
-  factory ExecutableManager() => _instance;
-  ExecutableManager._internal();
+  late Directory executablesDir;
 
-  String? _ffmpegPath;
-  String? _waifu2xPath;
-  String? _modelsDir;
+  String get waifu2xPath {
+    if (Platform.isMacOS) {
+      return path.join(executablesDir.path, 'macos', 'waifu2x-ncnn-vulkan');
+    } else if (Platform.isWindows) {
+      return path.join(
+          executablesDir.path, 'windows', 'waifu2x-ncnn-vulkan.exe');
+    } else {
+      return path.join(executablesDir.path, 'linux', 'waifu2x-ncnn-vulkan');
+    }
+  }
+
+  String get ffmpegPath {
+    if (Platform.isMacOS) {
+      return path.join(executablesDir.path, 'macos', 'ffmpeg');
+    } else if (Platform.isWindows) {
+      return path.join(executablesDir.path, 'windows', 'ffmpeg.exe');
+    } else {
+      return path.join(executablesDir.path, 'linux', 'ffmpeg');
+    }
+  }
+
+  String getModelPath(String modelType) {
+    final platformDir = Platform.isMacOS
+        ? 'macos'
+        : Platform.isWindows
+            ? 'windows'
+            : 'linux';
+
+    switch (modelType) {
+      case 'cunet':
+        return path.join(executablesDir.path, platformDir, 'models-cunet');
+      case 'anime':
+        return path.join(executablesDir.path, platformDir,
+            'models-upconv_7_anime_style_art_rgb');
+      case 'photo':
+        return path.join(
+            executablesDir.path, platformDir, 'models-upconv_7_photo');
+      default:
+        return path.join(executablesDir.path, platformDir, 'models-cunet');
+    }
+  }
 
   Future<void> initializeExecutables() async {
-    final appDir = await getApplicationSupportDirectory();
-    final executablesDir = Directory(path.join(appDir.path, 'executables'));
+    await _setupExecutablesDirectory();
+
+    // НОВОЕ: сначала скачиваем реальные файлы модели
+    await _downloadRealModelFiles();
+
+    await _extractExecutablesFromAssets();
+    await _makeExecutablesExecutable();
+
+    print('Все файлы успешно извлечены');
+  }
+
+  Future<void> _setupExecutablesDirectory() async {
+    final appSupportDir = await _getApplicationSupportDirectory();
+    executablesDir = Directory(path.join(appSupportDir.path, 'executables'));
 
     if (!await executablesDir.exists()) {
       await executablesDir.create(recursive: true);
     }
-
-    await _extractAllFiles(executablesDir.path);
   }
 
-  Future<void> _extractAllFiles(String targetDir) async {
-    final platform = _getPlatformName();
-    print('Извлечение файлов для платформы: $platform');
+  // НОВЫЙ МЕТОД: Скачивание настоящих файлов модели
+  Future<void> _downloadRealModelFiles() async {
+    print(
+        '📥 Скачиваем настоящие файлы модели из оригинального репозитория...');
 
-    final platformDir = Directory(path.join(targetDir, platform));
-    if (!await platformDir.exists()) {
-      await platformDir.create(recursive: true);
-    }
+    final platformDir = Platform.isMacOS
+        ? 'macos'
+        : Platform.isWindows
+            ? 'windows'
+            : 'linux';
 
-    try {
-      final manifestContent = await rootBundle.loadString('AssetManifest.json');
-      final Map<String, dynamic> manifestMap = json.decode(manifestContent);
+    // URLs файлов модели из оригинального репозитория waifu2x-ncnn-vulkan
+    final modelUrls = {
+      // CUNet модель - основная
+      'models-cunet/noise0_scale2.0x_model.bin':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise0_scale2.0x_model.bin',
+      'models-cunet/noise0_scale2.0x_model.param':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise0_scale2.0x_model.param',
+      'models-cunet/noise1_scale2.0x_model.bin':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise1_scale2.0x_model.bin',
+      'models-cunet/noise1_scale2.0x_model.param':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise1_scale2.0x_model.param',
+      'models-cunet/noise2_scale2.0x_model.bin':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise2_scale2.0x_model.bin',
+      'models-cunet/noise2_scale2.0x_model.param':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise2_scale2.0x_model.param',
+      'models-cunet/noise3_scale2.0x_model.bin':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise3_scale2.0x_model.bin',
+      'models-cunet/noise3_scale2.0x_model.param':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise3_scale2.0x_model.param',
 
-      final platformAssets =
-          manifestMap.keys
-              .where(
-                (String key) => key.startsWith('assets/executables/$platform/'),
-              )
-              .toList();
+      // Только noise файлы
+      'models-cunet/noise0_model.bin':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise0_model.bin',
+      'models-cunet/noise0_model.param':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise0_model.param',
+      'models-cunet/noise1_model.bin':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise1_model.bin',
+      'models-cunet/noise1_model.param':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise1_model.param',
+      'models-cunet/noise2_model.bin':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise2_model.bin',
+      'models-cunet/noise2_model.param':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise2_model.param',
+      'models-cunet/noise3_model.bin':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise3_model.bin',
+      'models-cunet/noise3_model.param':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/noise3_model.param',
 
-      print('Найдено ${platformAssets.length} файлов для извлечения');
-
-      for (final assetPath in platformAssets) {
-        await _extractSingleFile(assetPath, targetDir);
-      }
-
-      _setExecutablePaths(targetDir, platform);
-
-      print('Все файлы успешно извлечены');
-    } catch (e) {
-      throw Exception('Ошибка при извлечении файлов: $e');
-    }
-  }
-
-  Future<void> _extractSingleFile(
-    String assetPath,
-    String baseTargetDir,
-  ) async {
-    try {
-      final relativePath = assetPath.replaceFirst('assets/executables/', '');
-      final targetPath = path.join(baseTargetDir, relativePath);
-
-      final targetFile = File(targetPath);
-      final targetDirPath = targetFile.parent;
-      if (!await targetDirPath.exists()) {
-        await targetDirPath.create(recursive: true);
-      }
-
-      final data = await rootBundle.load(assetPath);
-      await targetFile.writeAsBytes(data.buffer.asUint8List());
-
-      if (!Platform.isWindows && _isExecutableFile(path.basename(targetPath))) {
-        await Process.run('chmod', ['+x', targetPath]);
-      }
-
-      print('Извлечен: $relativePath');
-    } catch (e) {
-      print('Ошибка при извлечении $assetPath: $e');
-      throw e;
-    }
-  }
-
-  void _setExecutablePaths(String baseDir, String platform) {
-    if (platform == 'windows') {
-      _waifu2xPath = path.join(baseDir, platform, 'waifu2x-ncnn-vulkan.exe');
-      _ffmpegPath = path.join(baseDir, platform, 'ffmpeg.exe');
-    } else {
-      _waifu2xPath = path.join(baseDir, platform, 'waifu2x-ncnn-vulkan');
-      _ffmpegPath = path.join(baseDir, platform, 'ffmpeg');
-    }
-
-    _modelsDir = path.join(baseDir, platform);
-
-    print('Waifu2x path: $_waifu2xPath');
-    print('FFmpeg path: $_ffmpegPath');
-    print('Models dir: $_modelsDir');
-  }
-
-  bool _isExecutableFile(String filename) {
-    return filename == 'waifu2x-ncnn-vulkan' ||
-        filename == 'waifu2x-ncnn-vulkan.exe' ||
-        filename == 'ffmpeg' ||
-        filename == 'ffmpeg.exe';
-  }
-
-  String _getPlatformName() {
-    if (Platform.isWindows) return 'windows';
-    if (Platform.isMacOS) return 'macos';
-    if (Platform.isLinux) return 'linux';
-    throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
-  }
-
-  String get ffmpegPath {
-    if (_ffmpegPath == null) {
-      throw StateError(
-        'ExecutableManager не инициализирован. Вызовите initializeExecutables() сначала.',
-      );
-    }
-    return _ffmpegPath!;
-  }
-
-  String get waifu2xPath {
-    if (_waifu2xPath == null) {
-      throw StateError(
-        'ExecutableManager не инициализирован. Вызовите initializeExecutables() сначала.',
-      );
-    }
-    return _waifu2xPath!;
-  }
-
-  String get modelsDir {
-    if (_modelsDir == null) {
-      throw StateError(
-        'ExecutableManager не инициализирован. Вызовите initializeExecutables() сначала.',
-      );
-    }
-    return _modelsDir!;
-  }
-
-  String getModelPath(String modelType) {
-    final availableModels = {
-      'cunet': 'models-cunet',
-      'anime': 'models-upconv_7_anime_style_art_rgb',
-      'photo': 'models-upconv_7_photo',
+      // Scale файлы
+      'models-cunet/scale2.0x_model.bin':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/scale2.0x_model.bin',
+      'models-cunet/scale2.0x_model.param':
+          'https://github.com/nihui/waifu2x-ncnn-vulkan/raw/master/models-cunet/scale2.0x_model.param',
     };
 
-    final modelFolder = availableModels[modelType];
-    if (modelFolder == null) {
-      throw ArgumentError(
-        'Неизвестный тип модели: $modelType. Доступные: ${availableModels.keys.join(', ')}',
-      );
+    final http.Client client = http.Client();
+
+    for (final entry in modelUrls.entries) {
+      final relativePath = entry.key;
+      final url = entry.value;
+      final localPath =
+          path.join(executablesDir.path, platformDir, relativePath);
+
+      // Создаем директорию если не существует
+      final localDir = Directory(path.dirname(localPath));
+      if (!await localDir.exists()) {
+        await localDir.create(recursive: true);
+      }
+
+      // ПРОВЕРЯЕМ если файл уже существует и имеет правильный размер
+      final file = File(localPath);
+      if (await file.exists()) {
+        final size = await file.length();
+        if (size > 100 * 1024) {
+          // Больше 100KB = нормальный файл
+          print(
+              '✅ ${path.basename(localPath)}: уже существует (${(size / 1024 / 1024).toStringAsFixed(1)} MB)');
+          continue;
+        } else {
+          print(
+              '🗑️ ${path.basename(localPath)}: удаляем поврежденный файл (${size} bytes)');
+          await file.delete();
+        }
+      }
+
+      print('📥 Скачиваем: ${path.basename(localPath)}');
+
+      try {
+        final response = await client.get(Uri.parse(url));
+
+        if (response.statusCode == 200) {
+          await file.writeAsBytes(response.bodyBytes);
+
+          final size = response.bodyBytes.length;
+          print(
+              '✅ Скачан: ${path.basename(localPath)} (${(size / 1024 / 1024).toStringAsFixed(1)} MB)');
+
+          // ПРОВЕРЯЕМ что файл действительно нормального размера
+          if (size < 100 * 1024) {
+            print(
+                '⚠️ ВНИМАНИЕ: Файл слишком маленький: ${path.basename(localPath)} (${size} bytes)');
+          }
+        } else {
+          print(
+              '❌ Ошибка скачивания ${path.basename(localPath)}: HTTP ${response.statusCode}');
+        }
+      } catch (e) {
+        print('❌ Ошибка скачивания ${path.basename(localPath)}: $e');
+      }
     }
 
-    return path.join(modelsDir, modelFolder);
+    client.close();
+    print('✅ Скачивание файлов модели завершено');
+  }
+
+  Future<void> _extractExecutablesFromAssets() async {
+    final platformDir = Platform.isMacOS
+        ? 'macos'
+        : Platform.isWindows
+            ? 'windows'
+            : 'linux';
+    print('Извлечение файлов для платформы: $platformDir');
+
+    final assetManifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+    final assetKeys = assetManifest
+        .listAssets()
+        .where((key) => key.startsWith('assets/executables/$platformDir/'))
+        .toList();
+
+    print('Найдено ${assetKeys.length} файлов для извлечения');
+
+    for (final assetKey in assetKeys) {
+      // ПРОПУСКАЕМ файлы модели - они теперь скачиваются отдельно
+      if (assetKey.contains('models-') &&
+          (assetKey.endsWith('.bin') || assetKey.endsWith('.param'))) {
+        print(
+            'Пропускаем файл модели: ${path.basename(assetKey)} (скачивается отдельно)');
+        continue;
+      }
+
+      final relativePath =
+          assetKey.replaceFirst('assets/executables/$platformDir/', '');
+      final targetPath =
+          path.join(executablesDir.path, platformDir, relativePath);
+
+      final targetDir = Directory(path.dirname(targetPath));
+      if (!await targetDir.exists()) {
+        await targetDir.create(recursive: true);
+      }
+
+      final byteData = await rootBundle.load(assetKey);
+      final bytes = byteData.buffer.asUint8List();
+
+      await File(targetPath).writeAsBytes(bytes);
+      print('Извлечен: $relativePath');
+    }
+  }
+
+  Future<void> _makeExecutablesExecutable() async {
+    if (!Platform.isWindows) {
+      try {
+        await Process.run('chmod', ['+x', waifu2xPath]);
+        await Process.run('chmod', ['+x', ffmpegPath]);
+        print('Исполняемые файлы сделаны исполняемыми');
+      } catch (e) {
+        print('Ошибка при установке прав доступа: $e');
+      }
+    }
   }
 
   Future<bool> validateInstallation() async {
-    try {
-      if (!await File(ffmpegPath).exists()) {
-        print('FFmpeg не найден: $ffmpegPath');
+    print('🔍 Проверка установки исполняемых файлов...');
+
+    if (!await File(waifu2xPath).exists()) {
+      print('❌ waifu2x не найден');
+      return false;
+    }
+
+    if (!await File(ffmpegPath).exists()) {
+      print('❌ FFmpeg не найден');
+      return false;
+    }
+
+    // НОВОЕ: проверяем размеры файлов модели
+    if (!await _validateModelFiles()) {
+      print('🚨 Обнаружены поврежденные файлы модели - переустанавливаем...');
+
+      // ПЕРЕУСТАНАВЛИВАЕМ файлы модели
+      await _downloadRealModelFiles();
+
+      // Перепроверяем
+      if (!await _validateModelFiles()) {
+        print('❌ Не удалось восстановить файлы модели');
         return false;
       }
+    }
 
-      if (!await File(waifu2xPath).exists()) {
-        print('Waifu2x не найден: $waifu2xPath');
-        return false;
+    print('✅ Все файлы найдены и готовы к использованию');
+    return true;
+  }
+
+  Future<bool> _validateModelFiles() async {
+    print('🔍 ПРОВЕРКА РАЗМЕРОВ ФАЙЛОВ МОДЕЛИ');
+
+    final modelTypes = ['cunet']; // Пока проверяем только основную модель
+    bool allValid = true;
+
+    for (final modelType in modelTypes) {
+      final modelPath = getModelPath(modelType);
+
+      if (!await Directory(modelPath).exists()) {
+        print('❌ Директория модели не существует: $modelPath');
+        allValid = false;
+        continue;
       }
 
-      final modelTypes = ['cunet', 'anime', 'photo'];
-      for (final modelType in modelTypes) {
-        final modelPath = getModelPath(modelType);
-        if (!await Directory(modelPath).exists()) {
-          print('Модель $modelType не найдена: $modelPath');
-          return false;
+      final files = await Directory(modelPath)
+          .list()
+          .where((entity) =>
+              entity is File &&
+              (entity.path.endsWith('.bin') || entity.path.endsWith('.param')))
+          .cast<File>()
+          .toList();
+
+      for (final file in files) {
+        final size = await file.length();
+        final name = path.basename(file.path);
+
+        print('📄 $modelType/$name: ${(size / 1024).toStringAsFixed(1)} KB');
+
+        // КРИТИЧЕСКАЯ ПРОВЕРКА: файлы модели должны быть больше 100KB
+        if (size < 100 * 1024) {
+          // Меньше 100KB = поврежден или LFS pointer
+          print('🚨 ПОВРЕЖДЕННЫЙ ФАЙЛ: $name (${size} bytes)');
+          allValid = false;
+
+          // УДАЛЯЕМ поврежденный файл
+          await file.delete();
+          print('🗑️ Удален поврежденный файл: $name');
         }
       }
+    }
 
-      print('Все файлы найдены и готовы к использованию');
-      return true;
-    } catch (e) {
-      print('Ошибка при проверке установки: $e');
-      return false;
+    return allValid;
+  }
+
+  Future<Directory> _getApplicationSupportDirectory() async {
+    // Реализация зависит от платформы
+    if (Platform.isMacOS) {
+      return Directory(path.join(Platform.environment['HOME']!, 'Library',
+          'Application Support', 'com.example.videoUpscaler'));
+    } else if (Platform.isWindows) {
+      return Directory(
+          path.join(Platform.environment['APPDATA']!, 'VideoUpscaler'));
+    } else {
+      return Directory(path.join(
+          Platform.environment['HOME']!, '.local', 'share', 'video_upscaler'));
     }
   }
 
-  Future<int> getInstallationSize() async {
-    int totalSize = 0;
-
-    try {
-      final platformDir = Directory(path.dirname(waifu2xPath));
-      await for (final entity in platformDir.list(recursive: true)) {
-        if (entity is File) {
-          final stat = await entity.stat();
-          totalSize += stat.size;
-        }
-      }
-    } catch (e) {
-      print('Ошибка при подсчете размера: $e');
+  Future<void> _cleanupExecutables() async {
+    if (await executablesDir.exists()) {
+      await executablesDir.delete(recursive: true);
+      print('Очистка исполняемых файлов завершена');
     }
-
-    return totalSize;
   }
 }
