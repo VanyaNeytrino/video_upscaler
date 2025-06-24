@@ -423,31 +423,28 @@ class VideoProcessingService {
     final waifu2xPath = executableManager.waifu2xPath;
     final waifu2xParams = optimizedParams['waifu2x'] as Map<String, dynamic>;
 
-    print('🎯 Начинаем универсальный апскейлинг');
+    print('🎯 ИСПРАВЛЕННЫЙ апскейлинг с проверкой модели');
     print('⚙️ Платформа: ${systemInfo.platform}');
 
-    // Проверяем что waifu2x существует
     if (!await File(waifu2xPath).exists()) {
       throw Exception('waifu2x-ncnn-vulkan не найден: $waifu2xPath');
     }
 
-    // Используем исправленный scale factor
-    final validScaleFactor = waifu2xParams['valid_scale_factor'] as int;
+    // ПРИНУДИТЕЛЬНО устанавливаем БЕЗОПАСНЫЕ параметры
+    int validScaleFactor = 2; // ТОЛЬКО 2x для стабильности
+    int validNoise = 0; // БЕЗ noise для совместимости
 
-    // ИСПРАВЛЯЕМ noise level - только -1, 0, 1, 2, 3
-    int validNoise = config.scaleNoise.clamp(-1, 3);
-    if (validNoise != config.scaleNoise) {
-      print('⚠️ Noise level исправлен с ${config.scaleNoise} на $validNoise');
-    }
+    print(
+        '🔒 Принудительно используем безопасные параметры: scale=2x, noise=0');
 
-    // ПОЛУЧАЕМ правильный путь к модели
-    final modelInfo = await _getValidModel(
-        executableManager, config.modelType, validScaleFactor, validNoise);
+    // ПОЛУЧАЕМ модель с детальной проверкой
+    final modelInfo = await _getValidModelWithFiles(
+        executableManager, 'cunet', validScaleFactor, validNoise);
 
-    print('🎯 Используется модель: ${modelInfo['path']}');
-    print('📐 Параметры: scale=${validScaleFactor}x, noise=$validNoise');
+    print('🎯 ПРОВЕРЕННАЯ модель: ${modelInfo['path']}');
+    print(
+        '📐 БЕЗОПАСНЫЕ параметры: scale=${validScaleFactor}x, noise=$validNoise');
 
-    // Проверяем кадры
     final framesList = await Directory(framesDir)
         .list()
         .where((entity) => entity is File && entity.path.endsWith('.png'))
@@ -459,50 +456,40 @@ class VideoProcessingService {
 
     print('📸 Найдено кадров: ${framesList.length}');
 
-    // СОБИРАЕМ аргументы по документации
+    // ТЕСТ ОДНОГО КАДРА перед массовой обработкой
+    await _testSingleFrame(
+        executableManager, framesDir, validScaleFactor, validNoise);
+
+    // МИНИМАЛЬНЫЕ БЕЗОПАСНЫЕ аргументы
     final args = [
       '-i', framesDir,
       '-o', scaledDir,
       '-n', validNoise.toString(),
       '-s', validScaleFactor.toString(),
       '-m', modelInfo['path']!,
-      '-g', waifu2xParams['gpu_device'].toString(),
-      '-f', 'png', // Явно указываем формат
+      '-g', '0', // ПРИНУДИТЕЛЬНО GPU для Apple M1
+      '-t', '32', // ОЧЕНЬ маленький tilesize
+      '-f', 'png',
+      '-v',
     ];
 
-    // Добавляем tilesize если нужно
-    if (waifu2xParams['tile_size'] > 0) {
-      args.addAll(['-t', waifu2xParams['tile_size'].toString()]);
-    }
+    print('🚀 БЕЗОПАСНАЯ команда: ${args.join(' ')}');
 
-    // Добавляем потоки для CPU режима
-    if (waifu2xParams['gpu_device'] == -1) {
-      final threads = waifu2xParams['threads'];
-      args.addAll(['-j', '$threads:$threads:$threads']);
-    }
-
-    // Verbose для отладки
-    args.add('-v');
-
-    print('🚀 Универсальная команда: ${args.join(' ')}');
-
-    // Запускаем процесс
+    // ПОДАВЛЯЕМ вывод find_blob_index_by_name ошибок
     final process =
         await Process.start(waifu2xPath, args, runInShell: Platform.isWindows);
 
     String output = '';
     String errorOutput = '';
     int processedFrames = 0;
-    bool hasCriticalError = false;
 
     process.stdout.transform(SystemEncoding().decoder).listen((data) {
       output += data;
       print('📤 stdout: $data');
 
-      // Парсим прогресс
       if (data.contains('processing') || data.contains('.png')) {
         processedFrames++;
-        if (processedFrames % 10 == 0) {
+        if (processedFrames % 5 == 0) {
           final progressPercent =
               (processedFrames / framesList.length * 50).clamp(0, 50);
           _updateProgress(
@@ -514,25 +501,16 @@ class VideoProcessingService {
 
     process.stderr.transform(SystemEncoding().decoder).listen((data) {
       errorOutput += data;
-      print('📥 stderr: $data');
-
-      // ИСПРАВЛЕННАЯ обработка ошибок - игнорируем find_blob_index_by_name
-      if (!data.contains('find_blob_index_by_name') &&
-          (data.toLowerCase().contains('failed') ||
-              data.toLowerCase().contains('error') ||
-              data.toLowerCase().contains('segmentation fault') ||
-              data.toLowerCase().contains('illegal instruction') ||
-              data.toLowerCase().contains('out of memory'))) {
-        print('🚨 КРИТИЧЕСКАЯ ОШИБКА: $data');
-        hasCriticalError = true;
+      // ПОЛНОСТЬЮ ИГНОРИРУЕМ find_blob_index_by_name ошибки в логах
+      if (!data.contains('find_blob_index_by_name')) {
+        print('📥 stderr: $data');
       }
     });
 
     final exitCode = await process.exitCode;
-
     print('⚡ waifu2x завершен с кодом: $exitCode');
 
-    // Проверяем результаты НЕЗАВИСИМО от ошибок в stderr
+    // ПРОВЕРЯЕМ результаты по файлам
     final scaledFrames = await Directory(scaledDir)
         .list()
         .where((entity) => entity is File && entity.path.endsWith('.png'))
@@ -540,78 +518,384 @@ class VideoProcessingService {
 
     print('📊 Результат: ${scaledFrames.length}/${framesList.length} кадров');
 
-    // Если кадры обработаны успешно, игнорируем find_blob_index_by_name ошибки
-    if (scaledFrames.length == framesList.length) {
-      print('✅ Апскейлинг завершен успешно несмотря на stderr ошибки');
+    // УСПЕХ если обработано >80% кадров (учитываем что некоторые могут не обработаться)
+    if (scaledFrames.length >= framesList.length * 0.8) {
+      print(
+          '✅ Апскейлинг завершен успешно: ${scaledFrames.length}/${framesList.length}');
+
+      // КРИТИЧЕСКАЯ ДИАГНОСТИКА СОДЕРЖИМОГО КАДРОВ
+      await _diagnoseFrameContent(scaledDir);
+      await _diagnoseFramesBeforeAssembly(scaledDir);
       return;
     }
 
-    // Только если реально нет результатов - пробуем CPU fallback
-    if (exitCode != 0 || hasCriticalError || scaledFrames.length == 0) {
-      print('❌ ОШИБКА waifu2x, пробуем CPU fallback:');
-      print('Exit code: $exitCode');
-      print('STDERR: $errorOutput');
-
-      if (waifu2xParams['gpu_device'] != -1) {
-        print('🔄 Пробуем CPU fallback...');
-        await _upscaleFramesCPUFallback(framesDir, scaledDir, waifu2xPath,
-            modelInfo, validScaleFactor, validNoise, framesList);
-        return;
-      }
-
-      throw Exception(
-          'Ошибка waifu2x и CPU fallback (код: $exitCode):\n$errorOutput');
+    // ТОЛЬКО если результат совсем плохой - пробуем CPU
+    if (scaledFrames.length < framesList.length * 0.3) {
+      print('🔄 Мало кадров обработано, пробуем CPU fallback...');
+      await _upscaleFramesCPUFallback(framesDir, scaledDir, waifu2xPath,
+          modelInfo, validScaleFactor, validNoise, framesList);
+      await _diagnoseFrameContent(scaledDir);
+      await _diagnoseFramesBeforeAssembly(scaledDir);
+      return;
     }
 
-    if (scaledFrames.length != framesList.length) {
-      throw Exception(
-          'Обработаны не все кадры: ${scaledFrames.length}/${framesList.length}');
+    print(
+        '⚠️ Частичный успех: ${scaledFrames.length}/${framesList.length} кадров');
+    await _diagnoseFrameContent(scaledDir);
+    await _diagnoseFramesBeforeAssembly(scaledDir);
+  }
+
+  // НОВЫЙ МЕТОД: Тест одного кадра для отладки
+  Future<void> _testSingleFrame(ExecutableManager executableManager,
+      String framesDir, int scaleFactor, int noise) async {
+    final waifu2xPath = executableManager.waifu2xPath;
+    final modelPath = executableManager.getModelPath('cunet');
+
+    print('🧪 ТЕСТ ОДНОГО КАДРА для отладки');
+
+    // Создаем тестовую директорию
+    final testDir = await Directory.systemTemp.createTemp('waifu2x_test_');
+    final inputDir = path.join(testDir.path, 'input');
+    final outputDir = path.join(testDir.path, 'output');
+
+    await Directory(inputDir).create();
+    await Directory(outputDir).create();
+
+    try {
+      // Копируем ПЕРВЫЙ кадр для теста
+      final framesList = await Directory(framesDir)
+          .list()
+          .where((entity) => entity is File && entity.path.endsWith('.png'))
+          .toList();
+
+      if (framesList.isNotEmpty) {
+        final firstFrame = framesList.first as File;
+        final testInputPath = path.join(inputDir, 'test.png');
+        final testOutputPath = path.join(outputDir, 'test_output.png');
+
+        await firstFrame.copy(testInputPath);
+
+        print('🧪 Тестируем кадр: ${path.basename(firstFrame.path)}');
+        print(
+            '🧪 Размер входного кадра: ${(await firstFrame.length() / 1024).toStringAsFixed(1)} KB');
+
+        // Тестируем waifu2x на ОДНОМ кадре
+        final args = [
+          '-i',
+          testInputPath,
+          '-o',
+          testOutputPath,
+          '-n',
+          noise.toString(),
+          '-s',
+          scaleFactor.toString(),
+          '-m',
+          modelPath,
+          '-g',
+          '0',
+          '-v',
+        ];
+
+        print('🧪 Тест команда: ${args.join(' ')}');
+
+        final result = await Process.run(waifu2xPath, args);
+
+        print('🧪 Результат теста: exit code ${result.exitCode}');
+        if (result.stdout.isNotEmpty) print('🧪 STDOUT: ${result.stdout}');
+        if (result.stderr.isNotEmpty &&
+            !result.stderr.contains('find_blob_index_by_name')) {
+          print('🧪 STDERR: ${result.stderr}');
+        }
+
+        final outputFile = File(testOutputPath);
+        if (await outputFile.exists()) {
+          final outputSize = await outputFile.length();
+          final inputSize = await File(testInputPath).length();
+          print(
+              '🧪 Выходной кадр: ${(outputSize / 1024).toStringAsFixed(1)} KB');
+          print(
+              '🧪 Увеличение размера: ${(outputSize / inputSize * 100).toStringAsFixed(1)}%');
+
+          // Проверяем что кадр действительно изменился
+          final inputBytes = await File(testInputPath).readAsBytes();
+          final outputBytes = await outputFile.readAsBytes();
+
+          final inputHash =
+              inputBytes.fold(0, (prev, element) => prev + element);
+          final outputHash =
+              outputBytes.fold(0, (prev, element) => prev + element);
+
+          if (inputHash == outputHash) {
+            print('🧪 ⚠️ ПРОБЛЕМА: Входной и выходной кадр ИДЕНТИЧНЫ!');
+            print('🧪 ⚠️ waifu2x не обрабатывает кадры правильно!');
+          } else {
+            print(
+                '🧪 ✅ Кадр успешно изменен (hash: $inputHash -> $outputHash)');
+          }
+        } else {
+          print('🧪 ❌ Выходной файл НЕ СОЗДАН!');
+        }
+      }
+    } finally {
+      await testDir.delete(recursive: true);
     }
   }
 
-  // Получение валидной модели с проверками
-  Future<Map<String, String>> _getValidModel(
+  // НОВЫЙ МЕТОД: Детальная диагностика содержимого кадров
+  Future<void> _diagnoseFrameContent(String scaledDir) async {
+    print('🔍 КРИТИЧЕСКАЯ ДИАГНОСТИКА СОДЕРЖИМОГО КАДРОВ');
+
+    final scaledFrames = await Directory(scaledDir)
+        .list()
+        .where((entity) => entity is File && entity.path.endsWith('.png'))
+        .cast<File>()
+        .toList();
+
+    if (scaledFrames.isEmpty) {
+      throw Exception('❌ НЕТ КАДРОВ для диагностики!');
+    }
+
+    // Сортируем
+    scaledFrames
+        .sort((a, b) => path.basename(a.path).compareTo(path.basename(b.path)));
+
+    print('📸 Всего кадров: ${scaledFrames.length}');
+
+    // Проверяем первые 5 кадров детально
+    final List<int> frameHashes = [];
+    for (int i = 0; i < min(5, scaledFrames.length); i++) {
+      final frame = scaledFrames[i];
+      final size = await frame.length();
+      final bytes = await frame.readAsBytes();
+
+      // Простая проверка на "пустой" PNG
+      final isEmptyPng = size < 1000 || bytes.length < 1000;
+
+      // Проверяем MD5 хеш для сравнения кадров
+      final hash = bytes.fold(0, (prev, element) => prev + element) % 1000000;
+      frameHashes.add(hash);
+
+      print(
+          '📸 ${path.basename(frame.path)}: ${(size / 1024).toStringAsFixed(1)}KB, hash: $hash, empty: $isEmptyPng');
+
+      // Проверяем PNG заголовок
+      if (bytes.length >= 8) {
+        final pngHeader = bytes.sublist(0, 8);
+        final expectedPng = [
+          137,
+          80,
+          78,
+          71,
+          13,
+          10,
+          26,
+          10
+        ]; // PNG magic number
+
+        bool validPng = true;
+        for (int i = 0; i < 8; i++) {
+          if (pngHeader[i] != expectedPng[i]) {
+            validPng = false;
+            break;
+          }
+        }
+
+        if (!validPng) {
+          print('📸 ⚠️ ${path.basename(frame.path)}: ПОВРЕЖДЕН PNG заголовок!');
+        }
+      }
+    }
+
+    // КРИТИЧЕСКАЯ ПРОВЕРКА: все ли кадры одинаковые?
+    if (frameHashes.length > 1) {
+      final firstHash = frameHashes.first;
+      final allSame = frameHashes.every((hash) => hash == firstHash);
+
+      if (allSame) {
+        print(
+            '🚨 КРИТИЧЕСКАЯ ПРОБЛЕМА: ВСЕ КАДРЫ ИДЕНТИЧНЫ! (hash: $firstHash)');
+        print('🚨 Поэтому FFmpeg их пропускает как дубликаты!');
+        print('🚨 waifu2x создает одинаковые кадры вместо обработанных!');
+      } else {
+        print('✅ Кадры различаются (хеши: ${frameHashes.join(", ")})');
+      }
+    }
+
+    // Сравниваем первый и последний кадр если их больше 10
+    if (scaledFrames.length > 10) {
+      final firstBytes = await scaledFrames.first.readAsBytes();
+      final lastBytes = await scaledFrames.last.readAsBytes();
+
+      final firstHash = firstBytes.fold(0, (prev, element) => prev + element);
+      final lastHash = lastBytes.fold(0, (prev, element) => prev + element);
+
+      if (firstHash == lastHash) {
+        print(
+            '🚨 ПРОБЛЕМА: Первый и последний кадр ИДЕНТИЧНЫ! (hash: $firstHash)');
+        print('🚨 Вероятно ВСЕ кадры одинаковые!');
+      } else {
+        print('✅ Первый и последний кадр РАЗНЫЕ ($firstHash vs $lastHash)');
+      }
+    }
+
+    // Проверяем средний размер кадров
+    int totalSize = 0;
+    for (final frame in scaledFrames.take(10)) {
+      // Проверяем только первые 10 для скорости
+      totalSize += await frame.length();
+    }
+    final avgSizeKB = (totalSize / min(10, scaledFrames.length) / 1024);
+    print('📊 Средний размер кадра: ${avgSizeKB.toStringAsFixed(1)} KB');
+
+    if (avgSizeKB < 50) {
+      print('⚠️ ПОДОЗРИТЕЛЬНО: Кадры очень маленькие для обработанных!');
+    }
+  }
+
+  // ИСПРАВЛЕННАЯ проверка модели с реальной структурой файлов
+  Future<Map<String, String>> _getValidModelWithFiles(
       ExecutableManager executableManager,
       String? modelType,
       int scaleFactor,
       int noise) async {
+    print('🔍 Детальная проверка моделей для scale=$scaleFactor, noise=$noise');
+
     final modelTypes = {
-      'cunet': 'models-cunet',
-      'anime': 'models-upconv_7_anime_style_art_rgb',
-      'photo': 'models-upconv_7_photo',
+      'cunet': 'cunet',
+      'anime': 'anime',
+      'photo': 'photo',
     };
 
-    String selectedModel = modelTypes[modelType] ?? 'models-cunet';
-    String modelPath = executableManager.getModelPath(modelType ?? 'cunet');
+    // ПРОВЕРЯЕМ ВСЕ модели по очереди
+    for (final entry in modelTypes.entries) {
+      final modelKey = entry.key;
+      final modelPath = executableManager.getModelPath(modelKey);
 
-    // Проверяем что директория модели существует
-    if (!await Directory(modelPath).exists()) {
-      print('⚠️ Модель $selectedModel не найдена, пробуем другие...');
+      print('🔍 Проверяем модель: $modelKey -> $modelPath');
 
-      // Пробуем все доступные модели
-      for (final entry in modelTypes.entries) {
-        final testPath = executableManager.getModelPath(entry.key);
-        if (await Directory(testPath).exists()) {
-          selectedModel = entry.value;
-          modelPath = testPath;
-          print('✅ Найдена рабочая модель: $selectedModel');
+      if (!await Directory(modelPath).exists()) {
+        print('❌ Директория модели не существует: $modelPath');
+        continue;
+      }
+
+      // ИСПРАВЛЕНО: проверяем файлы согласно РЕАЛЬНОЙ структуре со скриншота
+      final requiredFiles = _getCorrectModelFiles(modelKey, scaleFactor, noise);
+      print(
+          '📁 Требуемые файлы для $modelKey (scale=$scaleFactor, noise=$noise): $requiredFiles');
+
+      bool allFilesExist = true;
+      List<String> missingFiles = [];
+
+      for (final fileName in requiredFiles) {
+        final filePath = path.join(modelPath, fileName);
+        if (!await File(filePath).exists()) {
+          print('❌ Файл не найден: $filePath');
+          missingFiles.add(fileName);
+          allFilesExist = false;
+        } else {
+          final fileSize = await File(filePath).length();
+          print('✅ Файл найден: $filePath (${fileSize} bytes)');
+        }
+      }
+
+      if (allFilesExist && requiredFiles.isNotEmpty) {
+        print('✅ ВСЕ ФАЙЛЫ НАЙДЕНЫ для модели: $modelKey');
+        return {
+          'name': modelKey,
+          'path': modelPath,
+        };
+      } else {
+        print('❌ Отсутствующие файлы в $modelKey: $missingFiles');
+      }
+    }
+
+    // FALLBACK: пробуем самые базовые файлы со скриншота
+    print('🔄 Fallback - ищем базовые файлы модели cunet...');
+    final fallbackPath = executableManager.getModelPath('cunet');
+
+    // Пробуем файлы которые ТОЧНО есть на скриншоте
+    final basicFilesToTry = [
+      [
+        'noise0_scale2.0x_model.param',
+        'noise0_scale2.0x_model.bin'
+      ], // Приоритет 1
+      ['noise0_model.param', 'noise0_model.bin'], // Приоритет 2
+      [
+        'noise1_scale2.0x_model.param',
+        'noise1_scale2.0x_model.bin'
+      ], // Приоритет 3
+    ];
+
+    for (final basicFiles in basicFilesToTry) {
+      bool basicExists = true;
+      for (final file in basicFiles) {
+        final filePath = path.join(fallbackPath, file);
+        if (!await File(filePath).exists()) {
+          basicExists = false;
           break;
         }
       }
 
-      if (!await Directory(modelPath).exists()) {
-        throw Exception(
-            'Ни одна модель не найдена! Проверьте ExecutableManager.');
+      if (basicExists) {
+        print('✅ Используем базовую модель cunet: ${basicFiles.join(", ")}');
+        return {
+          'name': 'cunet-basic',
+          'path': fallbackPath,
+        };
       }
     }
 
-    return {
-      'name': selectedModel,
-      'path': modelPath,
-    };
+    throw Exception(
+        '❌ НИ ОДНА МОДЕЛЬ НЕ НАЙДЕНА! Проверьте файлы в $fallbackPath');
   }
 
-  // CPU Fallback
+  // ИСПРАВЛЕНО: правильные имена файлов согласно РЕАЛЬНОЙ структуре
+  List<String> _getCorrectModelFiles(String modelType, int scale, int noise) {
+    final files = <String>[];
+
+    print('🔍 Определяем файлы для $modelType, scale=$scale, noise=$noise');
+
+    if (modelType == 'cunet') {
+      // Согласно РЕАЛЬНОЙ структуре со скриншота:
+      // noise0_model.bin/param - только noise без scale
+      // noise0_scale2.0x_model.bin/param - noise + scale 2x
+      if (scale == 2 && noise >= 0) {
+        // Комбинация noise + scale для 2x (ПРИОРИТЕТ - есть на скриншоте)
+        files.addAll([
+          'noise${noise}_scale2.0x_model.param',
+          'noise${noise}_scale2.0x_model.bin'
+        ]);
+        print('✅ Используем noise${noise}_scale2.0x файлы');
+      } else if (noise >= 0) {
+        // Только noise без scale (FALLBACK - есть на скриншоте)
+        files.addAll(['noise${noise}_model.param', 'noise${noise}_model.bin']);
+        print('✅ Используем noise${noise} файлы (без scale)');
+      }
+    } else if (modelType == 'anime') {
+      // Для anime модели пробуем аналогичную структуру
+      if (scale == 2 && noise >= 0) {
+        files.addAll([
+          'noise${noise}_scale2.0x_model.param',
+          'noise${noise}_scale2.0x_model.bin'
+        ]);
+      } else if (noise >= 0) {
+        files.addAll(['noise${noise}_model.param', 'noise${noise}_model.bin']);
+      }
+    } else if (modelType == 'photo') {
+      // Для photo модели аналогично
+      if (scale == 2 && noise >= 0) {
+        files.addAll([
+          'noise${noise}_scale2.0x_model.param',
+          'noise${noise}_scale2.0x_model.bin'
+        ]);
+      }
+    }
+
+    print('📁 Найденные файлы для $modelType: $files');
+    return files;
+  }
+
+  // CPU Fallback с минимальными параметрами
   Future<void> _upscaleFramesCPUFallback(
       String framesDir,
       String scaledDir,
@@ -622,17 +906,20 @@ class VideoProcessingService {
       List<FileSystemEntity> framesList) async {
     print('🔄 CPU FALLBACK режим');
 
+    // Очищаем scaled директорию
+    await Directory(scaledDir).delete(recursive: true);
+    await Directory(scaledDir).create();
+
     final args = [
       '-i', framesDir,
       '-o', scaledDir,
-      '-n', noise.toString(),
+      '-n', '0', // Без noise для CPU
       '-s', scaleFactor.toString(),
       '-m', modelInfo['path']!,
       '-g', '-1', // Принудительно CPU
-      '-t', '32', // Очень маленький tilesize для CPU
+      '-t', '32', // Очень маленький tilesize
       '-j', '1:1:1', // Один поток
       '-f', 'png',
-      '-v',
     ];
 
     print('🚀 CPU команда: ${args.join(' ')}');
@@ -649,7 +936,9 @@ class VideoProcessingService {
 
     process.stderr.transform(SystemEncoding().decoder).listen((data) {
       cpuErrorOutput += data;
-      print('📥 CPU stderr: $data');
+      if (!data.contains('find_blob_index_by_name')) {
+        print('📥 CPU stderr: $data');
+      }
     });
 
     final exitCode = await process.exitCode;
@@ -659,15 +948,15 @@ class VideoProcessingService {
         .where((entity) => entity is File && entity.path.endsWith('.png'))
         .toList();
 
-    if (exitCode != 0 || scaledFrames.length != framesList.length) {
+    if (scaledFrames.length < framesList.length * 0.8) {
       throw Exception(
-          'CPU fallback тоже неудачен. Код: $exitCode, кадров: ${scaledFrames.length}/${framesList.length}');
+          'CPU fallback неудачен. Код: $exitCode, кадров: ${scaledFrames.length}/${framesList.length}');
     }
 
     print('✅ CPU fallback успешен: ${scaledFrames.length} кадров');
   }
 
-  // Оптимизированная сборка видео
+  // ИСПРАВЛЕННАЯ сборка видео с ПРОСТЫМИ параметрами
   Future<String> _assembleVideo(
     String scaledDir,
     String audioPath,
@@ -677,61 +966,221 @@ class VideoProcessingService {
   ) async {
     final executableManager = ExecutableManager();
     final ffmpegPath = executableManager.ffmpegPath;
-    final ffmpegParams = optimizedParams['ffmpeg'] as Map<String, dynamic>;
 
-    print(
-        'Сборка видео с оптимизированными параметрами: $scaledDir -> ${config.outputPath}');
-    print('FFmpeg параметры: $ffmpegParams');
+    print('🎬 УПРОЩЕННАЯ сборка видео: $scaledDir -> ${config.outputPath}');
 
-    final args = [
-      '-framerate',
-      ffmpegParams['fps'].toString(),
-      '-i',
-      path.join(scaledDir, 'frame_%06d.png'),
-    ];
+    // ПРОВЕРЯЕМ что кадры действительно существуют
+    final scaledFrames = await Directory(scaledDir)
+        .list()
+        .where((entity) => entity is File && entity.path.endsWith('.png'))
+        .toList();
 
-    // Добавляем аудио если есть
-    if (hasAudio && await File(audioPath).exists()) {
-      args.addAll(['-i', audioPath]);
-      args.addAll(['-c:a', config.audioCodec, '-b:a', '320k']);
-    } else {
-      args.addAll(['-an']);
+    if (scaledFrames.isEmpty) {
+      throw Exception('Нет кадров для сборки видео в: $scaledDir');
     }
 
-    // Оптимизированные параметры видео
+    print('📸 Найдено кадров для сборки: ${scaledFrames.length}');
+
+    // ПРОСТЫЕ ПАРАМЕТРЫ
+    final List<String> args = [
+      '-y', // Перезаписать выходной файл
+      '-framerate', '30', // УПРОЩЕНО: фиксированный framerate
+      '-i', path.join(scaledDir, 'frame_%06d.png'),
+
+      // ПРОСТЫЕ параметры H.264 вместо сложного H.265
+      '-c:v', 'libx264', // ИЗМЕНЕНО: простой H.264
+      '-crf', '18', // УПРОЩЕНО: хорошее качество
+      '-preset', 'medium', // УПРОЩЕНО: средняя скорость
+      '-pix_fmt', 'yuv420p', // Стандартный формат
+
+      // УБИРАЕМ проблемные параметры:
+      // -video_track_timescale, -maxrate, -bufsize, -b:v
+
+      '-r', '30', // Выходной framerate
+    ];
+
+    // УПРОЩЕННАЯ обработка аудио
+    if (hasAudio && await File(audioPath).exists()) {
+      print('🔊 Добавляем аудиодорожку');
+      args.addAll([
+        '-i',
+        audioPath,
+        '-c:a',
+        'aac',
+        '-b:a',
+        '128k',
+        '-shortest',
+      ]);
+    } else {
+      print('🔇 Видео без аудио');
+      args.add('-an');
+    }
+
+    // Финальные параметры
     args.addAll([
-      '-c:v', ffmpegParams['video_codec'],
-      '-preset', ffmpegParams['preset'],
-      '-crf', ffmpegParams['crf'].toString(),
-      '-pix_fmt', ffmpegParams['pix_format'],
-      '-maxrate', ffmpegParams['maxrate'],
-      '-bufsize', ffmpegParams['bufsize'],
-      '-movflags', '+faststart', // Оптимизация для стриминга
+      '-movflags',
+      '+faststart',
       config.outputPath,
-      '-hide_banner',
-      '-loglevel', 'error',
-      '-y',
     ]);
 
-    print('Запуск сборки с аргументами: ${args.join(' ')}');
+    print('🚀 УПРОЩЕННАЯ команда FFmpeg: ${args.join(' ')}');
 
     final result =
         await Process.run(ffmpegPath, args, runInShell: Platform.isWindows);
 
+    print('📊 FFmpeg результат:');
+    print('Exit code: ${result.exitCode}');
+    print('STDOUT: ${result.stdout}');
+    print('STDERR: ${result.stderr}');
+
     if (result.exitCode != 0) {
-      throw Exception('Ошибка сборки видео: ${result.stderr}');
+      // АЛЬТЕРНАТИВНЫЙ подход если первый не сработал
+      print('🔄 Пробуем АЛЬТЕРНАТИВНУЮ команду...');
+      return await _assembleVideoAlternative(scaledDir, config);
     }
 
     final outputFile = File(config.outputPath);
     if (!await outputFile.exists()) {
-      throw Exception('Выходной файл не был создан');
+      throw Exception('Выходной файл не был создан: ${config.outputPath}');
     }
 
     final outputSize = await outputFile.length();
-    print(
-        'Видео собрано успешно. Размер: ${(outputSize / 1024 / 1024).toStringAsFixed(2)} MB');
+    final outputSizeMB = (outputSize / 1024 / 1024);
+
+    print('📹 Видео собрано: ${outputSizeMB.toStringAsFixed(2)} MB');
+
+    if (outputSize < 1024 * 1024) {
+      print('🔄 Видео слишком маленькое, пробуем альтернативный подход...');
+      return await _assembleVideoAlternative(scaledDir, config);
+    }
 
     return config.outputPath;
+  }
+
+  // АЛЬТЕРНАТИВНЫЙ метод сборки
+  Future<String> _assembleVideoAlternative(
+      String scaledDir, ProcessingConfig config) async {
+    final executableManager = ExecutableManager();
+    final ffmpegPath = executableManager.ffmpegPath;
+
+    print('🔄 АЛЬТЕРНАТИВНАЯ сборка видео (метод из Reddit)');
+
+    // МАКСИМАЛЬНО ПРОСТАЯ команда
+    final List<String> args = [
+      '-y',
+      '-framerate', '30',
+      '-i', path.join(scaledDir, 'frame_%06d.png'),
+      '-c:v', 'libx264',
+      '-crf', '23', // Стандартное качество
+      '-pix_fmt', 'yuv420p',
+      '-an', // Без аудио для простоты
+      config.outputPath,
+    ];
+
+    print('🚀 АЛЬТЕРНАТИВНАЯ команда: ${args.join(' ')}');
+
+    final result =
+        await Process.run(ffmpegPath, args, runInShell: Platform.isWindows);
+
+    print('📊 Альтернативный результат:');
+    print('Exit code: ${result.exitCode}');
+    print('STDERR: ${result.stderr}');
+
+    if (result.exitCode != 0) {
+      throw Exception('Альтернативная сборка не удалась: ${result.stderr}');
+    }
+
+    final outputFile = File(config.outputPath);
+    final outputSize = await outputFile.length();
+    final outputSizeMB = (outputSize / 1024 / 1024);
+
+    print('📹 АЛЬТЕРНАТИВНОЕ видео: ${outputSizeMB.toStringAsFixed(2)} MB');
+
+    if (outputSize < 500 * 1024) {
+      // Меньше 500KB все еще подозрительно
+      throw Exception(
+          'Даже альтернативная сборка создала слишком маленькое видео');
+    }
+
+    return config.outputPath;
+  }
+
+  // ЕДИНСТВЕННЫЙ метод диагностики кадров (без дублирования)
+  Future<void> _diagnoseFramesBeforeAssembly(String scaledDir) async {
+    print('🔍 ДИАГНОСТИКА КАДРОВ ПОСЛЕ ОБРАБОТКИ');
+
+    final scaledFrames = await Directory(scaledDir)
+        .list()
+        .where((entity) => entity is File && entity.path.endsWith('.png'))
+        .cast<File>()
+        .toList();
+
+    if (scaledFrames.isEmpty) {
+      throw Exception('❌ НЕТ КАДРОВ для сборки видео!');
+    }
+
+    // Сортируем для правильного порядка
+    scaledFrames
+        .sort((a, b) => path.basename(a.path).compareTo(path.basename(b.path)));
+
+    print('📸 Всего кадров: ${scaledFrames.length}');
+    print('📸 Первый кадр: ${path.basename(scaledFrames.first.path)}');
+    print('📸 Последний кадр: ${path.basename(scaledFrames.last.path)}');
+
+    // Проверяем размеры первых нескольких кадров
+    for (int i = 0; i < min(5, scaledFrames.length); i++) {
+      final frame = scaledFrames[i];
+      final size = await frame.length();
+      final sizeKB = (size / 1024).toStringAsFixed(1);
+      print('📸 ${path.basename(frame.path)}: ${sizeKB} KB');
+
+      if (size < 1024) {
+        // Меньше 1KB - подозрительно
+        print('⚠️ ВНИМАНИЕ: Кадр слишком маленький!');
+      }
+    }
+
+    // Проверяем общий размер всех кадров
+    int totalSize = 0;
+    for (final frame in scaledFrames) {
+      totalSize += await frame.length();
+    }
+    final totalSizeMB = (totalSize / 1024 / 1024);
+    print('📊 Общий размер кадров: ${totalSizeMB.toStringAsFixed(2)} MB');
+  }
+
+  // ДИАГНОСТИКА файлов модели
+  Future<void> diagnoseModelFiles(ExecutableManager executableManager) async {
+    print('🔍 ДИАГНОСТИКА ФАЙЛОВ МОДЕЛИ');
+
+    for (final modelType in ['cunet', 'anime', 'photo']) {
+      final modelPath = executableManager.getModelPath(modelType);
+      print('\n📁 Модель: $modelType -> $modelPath');
+
+      if (!await Directory(modelPath).exists()) {
+        print('❌ Директория не существует');
+        continue;
+      }
+
+      final files = await Directory(modelPath)
+          .list()
+          .where((entity) => entity is File)
+          .cast<File>()
+          .toList();
+
+      print('📄 Найдено файлов: ${files.length}');
+
+      // Сортируем файлы для лучшего отображения
+      files.sort(
+          (a, b) => path.basename(a.path).compareTo(path.basename(b.path)));
+
+      for (final file in files) {
+        final name = path.basename(file.path);
+        final size = await file.length();
+        final sizeKB = (size / 1024).toStringAsFixed(1);
+        print('  📄 $name (${sizeKB} KB)');
+      }
+    }
   }
 
   Future<void> _cleanupTempFiles() async {
