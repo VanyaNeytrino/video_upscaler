@@ -34,17 +34,36 @@ jobs:
           chmod +x download_real_models.sh
           ./download_real_models.sh
 
+      # ИСПРАВЛЕНА проверка для учета ffmpeg.exe на Windows
       - name: Verify downloaded models
         run: |
           echo "🔍 Проверка загруженных моделей:"
+          
+          # Показываем структуру для диагностики
+          echo "📂 Структура assets/executables/:"
+          find assets/executables/ -type f | head -20
+          echo ""
+          
           for platform in linux windows macos; do
             echo "📁 Platform: $platform"
             
-            # Проверяем FFmpeg
-            if [ -f "assets/executables/$platform/ffmpeg" ]; then
-              size=$(stat -c%s "assets/executables/$platform/ffmpeg" 2>/dev/null || echo "0")
+            # ИСПРАВЛЕНО: Определяем правильное имя FFmpeg для каждой платформы
+            ffmpeg_name="ffmpeg"
+            if [ "$platform" = "windows" ]; then
+              ffmpeg_name="ffmpeg.exe"
+            fi
+            
+            echo "  Ищем: $ffmpeg_name"
+            
+            # Показываем содержимое папки платформы
+            echo "  📋 Содержимое assets/executables/$platform/:"
+            ls -la "assets/executables/$platform/" | head -10
+            
+            # Проверяем FFmpeg с правильным именем
+            if [ -f "assets/executables/$platform/$ffmpeg_name" ]; then
+              size=$(stat -c%s "assets/executables/$platform/$ffmpeg_name" 2>/dev/null || echo "0")
               size_mb=$((size / 1024 / 1024))
-              echo "  FFmpeg: ${size_mb}MB"
+              echo "  FFmpeg ($ffmpeg_name): ${size_mb}MB"
               
               if [ $size_mb -gt 50 ]; then
                 echo "  ✅ FFmpeg корректного размера"
@@ -53,7 +72,14 @@ jobs:
                 exit 1
               fi
             else
-              echo "  ❌ FFmpeg не найден"
+              echo "  ❌ FFmpeg ($ffmpeg_name) не найден"
+              
+              # Показываем все exe файлы если это Windows
+              if [ "$platform" = "windows" ]; then
+                echo "  🔍 Все .exe файлы в папке:"
+                find "assets/executables/$platform/" -name "*.exe" 2>/dev/null || echo "    Нет .exe файлов"
+              fi
+              
               exit 1
             fi
             
@@ -105,7 +131,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        # НЕ указываем никаких LFS параметров
 
       - name: Download AI models
         uses: actions/download-artifact@v4
@@ -113,16 +138,30 @@ jobs:
           name: ai-models
           path: assets/executables/
 
+      # ИСПРАВЛЕНА проверка для учета ffmpeg.exe на Windows
       - name: Verify models for platform
         shell: bash
         run: |
           echo "🔍 Проверка моделей для ${{ matrix.platform }}:"
           if [ -d "assets/executables/${{ matrix.platform }}" ]; then
-            # Проверяем FFmpeg
-            if [ -f "assets/executables/${{ matrix.platform }}/ffmpeg" ]; then
-              size=$(stat -c%s "assets/executables/${{ matrix.platform }}/ffmpeg" 2>/dev/null || stat -f%z "assets/executables/${{ matrix.platform }}/ffmpeg" 2>/dev/null || echo "0")
+            
+            # ИСПРАВЛЕНО: Определяем правильное имя FFmpeg
+            ffmpeg_name="ffmpeg"
+            if [ "${{ matrix.platform }}" = "windows" ]; then
+              ffmpeg_name="ffmpeg.exe"
+            fi
+            
+            echo "Ищем FFmpeg: $ffmpeg_name"
+            
+            # Показываем содержимое папки для диагностики
+            echo "📋 Содержимое assets/executables/${{ matrix.platform }}/:"
+            ls -la "assets/executables/${{ matrix.platform }}/"
+            
+            # Проверяем FFmpeg с правильным именем
+            if [ -f "assets/executables/${{ matrix.platform }}/$ffmpeg_name" ]; then
+              size=$(stat -c%s "assets/executables/${{ matrix.platform }}/$ffmpeg_name" 2>/dev/null || stat -f%z "assets/executables/${{ matrix.platform }}/$ffmpeg_name" 2>/dev/null || echo "0")
               size_mb=$((size / 1024 / 1024))
-              echo "FFmpeg: ${size_mb}MB"
+              echo "FFmpeg ($ffmpeg_name): ${size_mb}MB"
               
               if [ $size_mb -gt 50 ]; then
                 echo "✅ FFmpeg выглядит корректно"
@@ -130,6 +169,18 @@ jobs:
                 echo "❌ FFmpeg слишком мал - проблема со скачиванием"
                 exit 1
               fi
+            else
+              echo "❌ FFmpeg ($ffmpeg_name) не найден"
+              
+              # Дополнительная диагностика для Windows
+              if [ "${{ matrix.platform }}" = "windows" ]; then
+                echo "🔍 Поиск всех .exe файлов:"
+                find "assets/executables/${{ matrix.platform }}/" -name "*.exe" 2>/dev/null || echo "Нет .exe файлов"
+                echo "🔍 Поиск файлов содержащих 'ffmpeg':"
+                find "assets/executables/${{ matrix.platform }}/" -name "*ffmpeg*" 2>/dev/null || echo "Нет файлов с ffmpeg в имени"
+              fi
+              
+              exit 1
             fi
             
             find "assets/executables/${{ matrix.platform }}/" -name "*.bin" | head -3
@@ -304,7 +355,6 @@ jobs:
   # Проверка сборок
   verify-builds:
     name: Verify All Builds
-    needs: build
     runs-on: ubuntu-latest
     if: always()
     
