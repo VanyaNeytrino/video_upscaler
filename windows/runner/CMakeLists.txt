@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.14)
 project(runner LANGUAGES CXX)
 
+# Добавляем манифест
+set(BINARY_NAME "video_upscaler")
+set(APPLICATION_ID "com.example.video_upscaler")
+
+configure_file("app_manifest.xml" "${CMAKE_CURRENT_BINARY_DIR}/app_manifest.xml")
+
 # Define the application target. To change its name, change BINARY_NAME in the
 # top-level CMakeLists.txt, not the value here, or `flutter run` will no longer
 # work.
@@ -38,3 +44,14 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+# Добавляем манифест к исполняемому файлу
+target_sources(${BINARY_NAME} PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/app_manifest.xml"
+)
+
+# Линкуем манифест
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+  set_property(TARGET ${BINARY_NAME} PROPERTY
+    WIN32_EXECUTABLE TRUE
+  )
+endif()
