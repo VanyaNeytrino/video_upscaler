@@ -15,7 +15,7 @@ done
 
 # Создаем временную папку
 TEMP_DIR="temp_models_download"
-rm -rf "$TEMP_DIR"  # Удаляем если существует
+rm -rf "$TEMP_DIR"
 mkdir -p "$TEMP_DIR"
 cd "$TEMP_DIR"
 
@@ -33,12 +33,9 @@ download_with_retry() {
                 local size_mb=$((size / 1024 / 1024))
                 echo "✅ $output скачан: ${size_mb}MB"
                 return 0
-            else
-                echo "❌ Файл $output пуст или не создался"
             fi
-        else
-            echo "❌ Ошибка скачивания $output (попытка $i)"
         fi
+        echo "❌ Ошибка скачивания $output (попытка $i)"
         sleep 5
     done
     
@@ -46,24 +43,34 @@ download_with_retry() {
     return 1
 }
 
-# Скачиваем архивы
+# Скачиваем waifu2x архивы
 echo "📦 Скачиваем waifu2x release 20220728..."
-
 download_with_retry "https://github.com/nihui/waifu2x-ncnn-vulkan/releases/download/20220728/waifu2x-ncnn-vulkan-20220728-macos.zip" "waifu2x-macos.zip" || exit 1
 download_with_retry "https://github.com/nihui/waifu2x-ncnn-vulkan/releases/download/20220728/waifu2x-ncnn-vulkan-20220728-windows.zip" "waifu2x-windows.zip" || exit 1
 download_with_retry "https://github.com/nihui/waifu2x-ncnn-vulkan/releases/download/20220728/waifu2x-ncnn-vulkan-20220728-ubuntu.zip" "waifu2x-ubuntu.zip" || exit 1
 
-# ДОПОЛНИТЕЛЬНО: Скачиваем FFmpeg отдельно для каждой платформы
-echo "📦 Скачиваем FFmpeg отдельно..."
+# НОВОЕ: Скачиваем FFmpeg из надежных источников
+echo "📦 Скачиваем FFmpeg из проверенных источников..."
 
-# FFmpeg для Linux
-download_with_retry "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" "ffmpeg-linux.tar.xz" || echo "⚠️ FFmpeg Linux не скачан, будем искать в waifu2x архиве"
+# Получаем последнюю версию FFmpeg для Windows (gyan.dev - самый надежный)
+echo "🪟 Скачиваем FFmpeg для Windows..."
+download_with_retry "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" "ffmpeg-windows-gyan.zip" || {
+    echo "⚠️ Основной источник не работает, пробуем альтернативный..."
+    download_with_retry "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" "ffmpeg-windows-btbn.zip" || {
+        echo "⚠️ Оба источника Windows FFmpeg недоступны, будем искать в waifu2x"
+    }
+}
 
-# FFmpeg для Windows  
-download_with_retry "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" "ffmpeg-windows.zip" || echo "⚠️ FFmpeg Windows не скачан, будем искать в waifu2x архиве"
+# FFmpeg для Linux  
+echo "🐧 Скачиваем FFmpeg для Linux..."
+download_with_retry "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" "ffmpeg-linux.tar.xz" || echo "⚠️ FFmpeg Linux не скачан"
 
-# FFmpeg для macOS (если найдем)
-download_with_retry "https://evermeet.cx/ffmpeg/ffmpeg-6.1.zip" "ffmpeg-macos.zip" || echo "⚠️ FFmpeg macOS не скачан, будем искать в waifu2x архиве"
+# FFmpeg для macOS
+echo "🍎 Скачиваем FFmpeg для macOS..."
+download_with_retry "https://evermeet.cx/ffmpeg/ffmpeg-6.1.zip" "ffmpeg-macos.zip" || {
+    echo "⚠️ Пробуем альтернативный источник macOS FFmpeg..."
+    download_with_retry "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-macos64-gpl.tar.xz" "ffmpeg-macos.tar.xz" || echo "⚠️ FFmpeg macOS не скачан"
+}
 
 # Распаковываем waifu2x архивы
 echo "📂 Распаковываем waifu2x архивы..."
@@ -73,23 +80,36 @@ unzip -q waifu2x-ubuntu.zip || exit 1
 
 # Распаковываем FFmpeg архивы
 echo "📂 Распаковываем FFmpeg архивы..."
+
+# Linux FFmpeg
 if [ -f "ffmpeg-linux.tar.xz" ]; then
-    tar -xf ffmpeg-linux.tar.xz || echo "⚠️ Ошибка распаковки FFmpeg Linux"
+    echo "Распаковка Linux FFmpeg..."
+    tar -xf ffmpeg-linux.tar.xz && echo "✅ Linux FFmpeg распакован" || echo "❌ Ошибка распаковки Linux FFmpeg"
 fi
 
-if [ -f "ffmpeg-windows.zip" ]; then
-    unzip -q ffmpeg-windows.zip || echo "⚠️ Ошибка распаковки FFmpeg Windows"
+# Windows FFmpeg (несколько вариантов)
+if [ -f "ffmpeg-windows-gyan.zip" ]; then
+    echo "Распаковка Windows FFmpeg (Gyan)..."
+    unzip -q ffmpeg-windows-gyan.zip && echo "✅ Windows FFmpeg (Gyan) распакован" || echo "❌ Ошибка распаковки"
+elif [ -f "ffmpeg-windows-btbn.zip" ]; then
+    echo "Распаковка Windows FFmpeg (BtbN)..."
+    unzip -q ffmpeg-windows-btbn.zip && echo "✅ Windows FFmpeg (BtbN) распакован" || echo "❌ Ошибка распаковки"
 fi
 
+# macOS FFmpeg
 if [ -f "ffmpeg-macos.zip" ]; then
-    unzip -q ffmpeg-macos.zip || echo "⚠️ Ошибка распаковки FFmpeg macOS"
+    echo "Распаковка macOS FFmpeg (evermeet)..."
+    unzip -q ffmpeg-macos.zip && echo "✅ macOS FFmpeg распакован" || echo "❌ Ошибка распаковки"
+elif [ -f "ffmpeg-macos.tar.xz" ]; then
+    echo "Распаковка macOS FFmpeg (BtbN)..."
+    tar -xf ffmpeg-macos.tar.xz && echo "✅ macOS FFmpeg распакован" || echo "❌ Ошибка распаковки"
 fi
 
 # Показываем что распаковалось
 echo "📁 Содержимое после распаковки:"
 ls -la
 
-# Находим распакованные папки
+# Находим waifu2x папки
 MACOS_DIR=$(find . -name "*macos*" -type d | head -1)
 WINDOWS_DIR=$(find . -name "*windows*" -type d | head -1)
 UBUNTU_DIR=$(find . -name "*ubuntu*" -type d | head -1)
@@ -99,192 +119,155 @@ echo "  macOS: $MACOS_DIR"
 echo "  Windows: $WINDOWS_DIR"
 echo "  Ubuntu: $UBUNTU_DIR"
 
-# Находим FFmpeg папки
-FFMPEG_LINUX_DIR=$(find . -name "*ffmpeg*linux*" -type d | head -1)
-FFMPEG_WINDOWS_DIR=$(find . -name "*ffmpeg*win*" -type d | head -1)
-
-echo "📁 Найденные FFmpeg папки:"
-echo "  Linux: $FFMPEG_LINUX_DIR"
-echo "  Windows: $FFMPEG_WINDOWS_DIR"
-
-# Функция поиска FFmpeg в папке
-find_ffmpeg() {
-    local dir=$1
-    local platform=$2
+# Функция поиска FFmpeg в любой папке
+find_and_copy_ffmpeg() {
+    local target_platform=$1
+    local executable_name=$2
     
-    echo "🔍 Ищем FFmpeg в $dir для $platform..."
+    echo "🔍 Поиск FFmpeg для $target_platform (ищем $executable_name)..."
     
-    if [ -d "$dir" ]; then
-        find "$dir" -name "ffmpeg*" -type f | while read ffmpeg_file; do
-            local size=$(stat -c%s "$ffmpeg_file" 2>/dev/null || stat -f%z "$ffmpeg_file" 2>/dev/null || echo "0")
-            local size_mb=$((size / 1024 / 1024))
-            echo "  Найден: $ffmpeg_file (${size_mb}MB)"
-        done
+    # Ищем во всех распакованных папках
+    local found_ffmpeg=""
+    
+    # Поиск по всем возможным местам
+    for search_path in . */bin */ffmpeg* ffmpeg* *ffmpeg*; do
+        if [ -d "$search_path" ]; then
+            local candidate=$(find "$search_path" -name "$executable_name" -type f 2>/dev/null | head -1)
+            if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+                local size=$(stat -c%s "$candidate" 2>/dev/null || stat -f%z "$candidate" 2>/dev/null || echo "0")
+                local size_mb=$((size / 1024 / 1024))
+                
+                echo "  Найден кандидат: $candidate (${size_mb}MB)"
+                
+                if [ $size_mb -gt 10 ]; then
+                    found_ffmpeg="$candidate"
+                    echo "  ✅ Подходящий FFmpeg найден: $candidate"
+                    break
+                else
+                    echo "  ⚠️ Слишком мал: $candidate"
+                fi
+            fi
+        fi
+    done
+    
+    # Копируем если найден
+    if [ -n "$found_ffmpeg" ] && [ -f "$found_ffmpeg" ]; then
+        cp "$found_ffmpeg" "../assets/executables/$target_platform/$executable_name"
+        local final_size=$(stat -c%s "../assets/executables/$target_platform/$executable_name" 2>/dev/null || stat -f%z "../assets/executables/$target_platform/$executable_name" 2>/dev/null || echo "0")
+        local final_size_mb=$((final_size / 1024 / 1024))
+        echo "✅ FFmpeg скопирован для $target_platform: ${final_size_mb}MB"
+        return 0
+    else
+        echo "❌ FFmpeg для $target_platform не найден"
+        return 1
     fi
 }
 
-# Ищем FFmpeg в каждой папке
-for dir in $MACOS_DIR $WINDOWS_DIR $UBUNTU_DIR $FFMPEG_LINUX_DIR $FFMPEG_WINDOWS_DIR; do
-    if [ -n "$dir" ] && [ -d "$dir" ]; then
-        find_ffmpeg "$dir" "$(basename "$dir")"
-    fi
-done
-
-# Функция копирования моделей и исполняемых файлов
-copy_models() {
+# Функция копирования waifu2x и моделей
+copy_waifu2x_models() {
     local source_dir=$1
     local target_platform=$2
     
-    echo "📥 Копируем файлы для $target_platform из $source_dir..."
+    echo "📥 Копируем waifu2x и модели для $target_platform..."
     
     if [ ! -d "$source_dir" ]; then
         echo "❌ Папка $source_dir не найдена"
         return 1
     fi
     
-    # Показываем содержимое исходной папки
-    echo "📋 Содержимое $source_dir:"
-    ls -la "$source_dir/"
-    
     # Копируем модели
     for model_dir in "models-cunet" "models-upconv_7_anime_style_art_rgb" "models-upconv_7_photo"; do
         if [ -d "$source_dir/$model_dir" ]; then
             cp -r "$source_dir/$model_dir"/* "../assets/executables/$target_platform/$model_dir/"
-            echo "✅ $model_dir скопирована для $target_platform"
+            echo "✅ $model_dir скопирована"
         else
-            echo "⚠️ $model_dir не найдена в $source_dir"
+            echo "⚠️ $model_dir не найдена"
         fi
     done
     
     # Копируем waifu2x
-    if [ -f "$source_dir/waifu2x-ncnn-vulkan" ]; then
-        cp "$source_dir/waifu2x-ncnn-vulkan" "../assets/executables/$target_platform/"
-        echo "✅ waifu2x-ncnn-vulkan скопирован для $target_platform"
-    elif [ -f "$source_dir/waifu2x-ncnn-vulkan.exe" ]; then
-        cp "$source_dir/waifu2x-ncnn-vulkan.exe" "../assets/executables/$target_platform/"
-        echo "✅ waifu2x-ncnn-vulkan.exe скопирован для $target_platform"
+    local waifu2x_name="waifu2x-ncnn-vulkan"
+    if [ "$target_platform" = "windows" ]; then
+        waifu2x_name="waifu2x-ncnn-vulkan.exe"
+    fi
+    
+    if [ -f "$source_dir/$waifu2x_name" ]; then
+        cp "$source_dir/$waifu2x_name" "../assets/executables/$target_platform/"
+        echo "✅ $waifu2x_name скопирован"
     else
-        echo "⚠️ waifu2x исполняемый файл не найден в $source_dir"
+        echo "⚠️ $waifu2x_name не найден"
     fi
 }
 
-# Функция копирования FFmpeg
-copy_ffmpeg() {
-    local source_dir=$1
-    local target_platform=$2
-    local ffmpeg_name=$3
-    
-    echo "📥 Ищем FFmpeg для $target_platform..."
-    
-    # Сначала ищем в waifu2x папке
-    local ffmpeg_path=""
-    if [ -f "$source_dir/$ffmpeg_name" ]; then
-        ffmpeg_path="$source_dir/$ffmpeg_name"
-    else
-        # Ищем рекурсивно
-        ffmpeg_path=$(find "$source_dir" -name "$ffmpeg_name" -type f | head -1)
-    fi
-    
-    if [ -n "$ffmpeg_path" ] && [ -f "$ffmpeg_path" ]; then
-        local size=$(stat -c%s "$ffmpeg_path" 2>/dev/null || stat -f%z "$ffmpeg_path" 2>/dev/null || echo "0")
-        local size_mb=$((size / 1024 / 1024))
-        
-        if [ $size_mb -gt 10 ]; then
-            cp "$ffmpeg_path" "../assets/executables/$target_platform/$ffmpeg_name"
-            echo "✅ FFmpeg скопирован для $target_platform (${size_mb}MB)"
-            return 0
-        else
-            echo "⚠️ FFmpeg найден но слишком мал (${size_mb}MB): $ffmpeg_path"
-        fi
-    fi
-    
-    return 1
-}
+# Копируем waifu2x и модели для каждой платформы
+echo "📦 Копирование waifu2x и моделей..."
 
-# Копируем FFmpeg из отдельных архивов если есть
-copy_standalone_ffmpeg() {
-    local platform=$1
-    local ffmpeg_name=$2
-    
-    case $platform in
-        "linux")
-            if [ -n "$FFMPEG_LINUX_DIR" ]; then
-                local ffmpeg_path=$(find "$FFMPEG_LINUX_DIR" -name "ffmpeg" -type f | head -1)
-                if [ -n "$ffmpeg_path" ] && [ -f "$ffmpeg_path" ]; then
-                    cp "$ffmpeg_path" "../assets/executables/$platform/ffmpeg"
-                    echo "✅ Standalone FFmpeg скопирован для Linux"
-                    return 0
-                fi
-            fi
-            ;;
-        "windows")
-            if [ -n "$FFMPEG_WINDOWS_DIR" ]; then
-                local ffmpeg_path=$(find "$FFMPEG_WINDOWS_DIR" -name "ffmpeg.exe" -type f | head -1)
-                if [ -n "$ffmpeg_path" ] && [ -f "$ffmpeg_path" ]; then
-                    cp "$ffmpeg_path" "../assets/executables/$platform/ffmpeg.exe"
-                    echo "✅ Standalone FFmpeg скопирован для Windows"
-                    return 0
-                fi
-            fi
-            ;;
-        "macos")
-            if [ -f "ffmpeg" ]; then  # Из evermeet архива
-                cp "ffmpeg" "../assets/executables/$platform/ffmpeg"
-                echo "✅ Standalone FFmpeg скопирован для macOS"
-                return 0
-            fi
-            ;;
-    esac
-    
-    return 1
-}
-
-# Копируем для каждой платформы
-echo "📦 Копирование файлов..."
-
-# macOS
 if [ -n "$MACOS_DIR" ]; then
-    copy_models "$MACOS_DIR" "macos"
-    if ! copy_ffmpeg "$MACOS_DIR" "macos" "ffmpeg"; then
-        copy_standalone_ffmpeg "macos" "ffmpeg"
-    fi
+    copy_waifu2x_models "$MACOS_DIR" "macos"
 fi
 
-# Windows  
 if [ -n "$WINDOWS_DIR" ]; then
-    copy_models "$WINDOWS_DIR" "windows"
-    if ! copy_ffmpeg "$WINDOWS_DIR" "windows" "ffmpeg.exe"; then
-        copy_standalone_ffmpeg "windows" "ffmpeg.exe"
-    fi
+    copy_waifu2x_models "$WINDOWS_DIR" "windows"
 fi
 
-# Linux
 if [ -n "$UBUNTU_DIR" ]; then
-    copy_models "$UBUNTU_DIR" "linux"
-    if ! copy_ffmpeg "$UBUNTU_DIR" "linux" "ffmpeg"; then
-        copy_standalone_ffmpeg "linux" "ffmpeg"
+    copy_waifu2x_models "$UBUNTU_DIR" "linux"
+fi
+
+# Ищем и копируем FFmpeg для каждой платформы
+echo "📦 Поиск и копирование FFmpeg..."
+
+find_and_copy_ffmpeg "linux" "ffmpeg"
+find_and_copy_ffmpeg "windows" "ffmpeg.exe"
+find_and_copy_ffmpeg "macos" "ffmpeg"
+
+# Дополнительно: если FFmpeg в Windows или Linux не найден, копируем из waifu2x папок
+echo "🔄 Дополнительная проверка FFmpeg в waifu2x архивах..."
+
+# Для Windows
+if [ ! -f "../assets/executables/windows/ffmpeg.exe" ] && [ -n "$WINDOWS_DIR" ]; then
+    if [ -f "$WINDOWS_DIR/ffmpeg.exe" ]; then
+        cp "$WINDOWS_DIR/ffmpeg.exe" "../assets/executables/windows/"
+        echo "✅ FFmpeg скопирован из Windows waifu2x архива"
     fi
 fi
 
-# Возвращаемся в корень и удаляем временную папку
+# Для Linux  
+if [ ! -f "../assets/executables/linux/ffmpeg" ] && [ -n "$UBUNTU_DIR" ]; then
+    if [ -f "$UBUNTU_DIR/ffmpeg" ]; then
+        cp "$UBUNTU_DIR/ffmpeg" "../assets/executables/linux/"
+        echo "✅ FFmpeg скопирован из Linux waifu2x архива"
+    fi
+fi
+
+# Для macOS
+if [ ! -f "../assets/executables/macos/ffmpeg" ] && [ -n "$MACOS_DIR" ]; then
+    if [ -f "$MACOS_DIR/ffmpeg" ]; then
+        cp "$MACOS_DIR/ffmpeg" "../assets/executables/macos/"
+        echo "✅ FFmpeg скопирован из macOS waifu2x архива"
+    fi
+fi
+
+# Возвращаемся в корень
 cd ..
 rm -rf "$TEMP_DIR"
 
 echo "✅ Скачивание завершено!"
 
-# ФИНАЛЬНАЯ ПРОВЕРКА размеров файлов
+# ФИНАЛЬНАЯ ПРОВЕРКА
 echo "📊 ФИНАЛЬНАЯ ПРОВЕРКА РАЗМЕРОВ ФАЙЛОВ:"
 all_good=true
 
-for platform in macos windows linux; do
+for platform in linux windows macos; do
     echo "📁 $platform:"
     
-    # Проверяем FFmpeg
+    # Определяем имя FFmpeg
     ffmpeg_name="ffmpeg"
     if [ "$platform" = "windows" ]; then
         ffmpeg_name="ffmpeg.exe"
     fi
     
+    # Проверяем FFmpeg
     if [ -f "assets/executables/$platform/$ffmpeg_name" ]; then
         size=$(stat -c%s "assets/executables/$platform/$ffmpeg_name" 2>/dev/null || stat -f%z "assets/executables/$platform/$ffmpeg_name" 2>/dev/null || echo "0")
         size_mb=$((size / 1024 / 1024))
@@ -296,7 +279,22 @@ for platform in macos windows linux; do
             all_good=false
         fi
     else
-        echo "  ❌ FFmpeg не найден"
+        echo "  ❌ FFmpeg ($ffmpeg_name) не найден"
+        all_good=false
+    fi
+    
+    # Проверяем waifu2x
+    waifu2x_name="waifu2x-ncnn-vulkan"
+    if [ "$platform" = "windows" ]; then
+        waifu2x_name="waifu2x-ncnn-vulkan.exe"
+    fi
+    
+    if [ -f "assets/executables/$platform/$waifu2x_name" ]; then
+        size=$(stat -c%s "assets/executables/$platform/$waifu2x_name" 2>/dev/null || stat -f%z "assets/executables/$platform/$waifu2x_name" 2>/dev/null || echo "0")
+        size_mb=$((size / 1024 / 1024))
+        echo "  ✅ waifu2x: ${size_mb}MB"
+    else
+        echo "  ❌ waifu2x не найден"
         all_good=false
     fi
     
