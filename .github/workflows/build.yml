@@ -13,7 +13,7 @@ env:
   FLUTTER_VERSION: '3.27.1'
 
 jobs:
-  # Подготовка моделей - ИСПРАВЛЕНО для Git LFS
+  # Подготовка моделей БЕЗ Git LFS - только скрипт
   prepare-models:
     name: Download AI Models
     runs-on: ubuntu-latest
@@ -21,86 +21,35 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          lfs: true  # ДОБАВЛЕНО: включаем Git LFS
-
-      # НОВОЕ: Установка Git LFS и pull файлов
-      - name: Setup Git LFS
-        run: |
-          git lfs install
-          git lfs pull
-          echo "📦 Git LFS файлы загружены"
-
-      - name: Check current executable files
-        run: |
-          echo "🔍 Проверка текущих исполняемых файлов ПЕРЕД скачиванием:"
-          for platform in linux windows macos; do
-            echo "📁 Platform: $platform"
-            if [ -f "assets/executables/$platform/ffmpeg" ]; then
-              file_type=$(file "assets/executables/$platform/ffmpeg" 2>/dev/null || echo "file command failed")
-              file_size=$(stat -c%s "assets/executables/$platform/ffmpeg" 2>/dev/null || stat -f%z "assets/executables/$platform/ffmpeg" 2>/dev/null || echo "0")
-              size_mb=$((file_size / 1024 / 1024))
-              echo "  FFmpeg: $file_type (${size_mb}MB)"
-              
-              # Проверяем на Git LFS pointer - показываем первые строки
-              echo "  Первые 3 строки файла:"
-              head -3 "assets/executables/$platform/ffmpeg" 2>/dev/null || echo "  Не удалось прочитать файл"
-              
-              if head -3 "assets/executables/$platform/ffmpeg" 2>/dev/null | grep -q "version.*oid.*size"; then
-                echo "  ⚠️ FFmpeg является Git LFS pointer - требуется замена"
-              elif [ $size_mb -gt 50 ]; then
-                echo "  ✅ FFmpeg выглядит как бинарный файл"
-              else
-                echo "  ⚠️ FFmpeg подозрительно мал"
-              fi
-            else
-              echo "  ❌ FFmpeg не найден"
-            fi
-            echo "---"
-          done
+          lfs: false  # Полностью отключаем Git LFS
 
       - name: Create asset directories
         run: |
           echo "📁 Создание директорий для моделей..."
           mkdir -p assets/executables/{linux,windows,macos}/{models-cunet,models-upconv_7_anime_style_art_rgb,models-upconv_7_photo}
 
-      # ИСПРАВЛЕН: Принудительная загрузка настоящих файлов
-      - name: Download real model files
+      - name: Download real model files via script
         run: |
-          echo "📥 Принудительная загрузка НАСТОЯЩИХ файлов..."
-          
-          # Делаем скрипт исполняемым
+          echo "📥 Скачиваем НАСТОЯЩИЕ файлы модели через скрипт..."
           chmod +x download_real_models.sh
-          
-          # Запускаем скрипт
           ./download_real_models.sh
-          
-          echo "✅ Скрипт загрузки завершен"
 
-      # УЛУЧШЕНА: Проверка после загрузки
       - name: Verify downloaded models
         run: |
-          echo "🔍 ФИНАЛЬНАЯ проверка загруженных файлов:"
+          echo "🔍 Проверка загруженных моделей:"
           for platform in linux windows macos; do
             echo "📁 Platform: $platform"
             
-            # Детальная проверка FFmpeg
+            # Проверяем FFmpeg
             if [ -f "assets/executables/$platform/ffmpeg" ]; then
-              file_type=$(file "assets/executables/$platform/ffmpeg" 2>/dev/null || echo "file command failed")
-              file_size=$(stat -c%s "assets/executables/$platform/ffmpeg" 2>/dev/null || stat -f%z "assets/executables/$platform/ffmpeg" 2>/dev/null || echo "0")
-              size_mb=$((file_size / 1024 / 1024))
-              
-              echo "  FFmpeg: ${size_mb}MB - $file_type"
-              
-              # Показываем первые строки для диагностики
-              echo "  Первые 3 строки после скачивания:"
-              head -3 "assets/executables/$platform/ffmpeg" 2>/dev/null || echo "  Не удалось прочитать файл"
+              size=$(stat -c%s "assets/executables/$platform/ffmpeg" 2>/dev/null || echo "0")
+              size_mb=$((size / 1024 / 1024))
+              echo "  FFmpeg: ${size_mb}MB"
               
               if [ $size_mb -gt 50 ]; then
-                echo "  ✅ FFmpeg выглядит корректно (${size_mb}MB)"
+                echo "  ✅ FFmpeg корректного размера"
               else
-                echo "  ❌ FFmpeg слишком мал (${size_mb}MB) - возможно LFS pointer"
-                echo "  Содержимое файла:"
-                cat "assets/executables/$platform/ffmpeg" | head -5
+                echo "  ❌ FFmpeg слишком мал"
                 exit 1
               fi
             else
@@ -111,15 +60,15 @@ jobs:
             # Проверяем модели
             bin_count=$(find "assets/executables/$platform/" -name "*.bin" 2>/dev/null | wc -l)
             param_count=$(find "assets/executables/$platform/" -name "*.param" 2>/dev/null | wc -l)
-            echo "  Модели: ${bin_count} .bin файлов, ${param_count} .param файлов"
+            echo "  Модели: ${bin_count} .bin, ${param_count} .param файлов"
             
             if [ $bin_count -eq 0 ] || [ $param_count -eq 0 ]; then
-              echo "  ❌ Недостаточно файлов моделей"
+              echo "  ❌ Модели не найдены"
               exit 1
             fi
             echo "---"
           done
-          
+
       - name: Upload models as artifact
         uses: actions/upload-artifact@v4
         with:
@@ -127,7 +76,7 @@ jobs:
           path: assets/executables/
           retention-days: 1
 
-  # Матрица сборки для всех платформ
+  # Сборка для всех платформ
   build:
     name: Build ${{ matrix.platform }}
     needs: prepare-models
@@ -156,6 +105,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        # НЕ указываем никаких LFS параметров
 
       - name: Download AI models
         uses: actions/download-artifact@v4
@@ -163,56 +113,33 @@ jobs:
           name: ai-models
           path: assets/executables/
 
-      # УЛУЧШЕНА: Проверка моделей после скачивания артефактов
-      - name: Verify models for ${{ matrix.platform }}
+      - name: Verify models for platform
         shell: bash
         run: |
           echo "🔍 Проверка моделей для ${{ matrix.platform }}:"
           if [ -d "assets/executables/${{ matrix.platform }}" ]; then
-            
-            # Детальная проверка FFmpeg
+            # Проверяем FFmpeg
             if [ -f "assets/executables/${{ matrix.platform }}/ffmpeg" ]; then
-              file_size=$(stat -c%s "assets/executables/${{ matrix.platform }}/ffmpeg" 2>/dev/null || stat -f%z "assets/executables/${{ matrix.platform }}/ffmpeg" 2>/dev/null || echo "0")
-              size_mb=$((file_size / 1024 / 1024))
+              size=$(stat -c%s "assets/executables/${{ matrix.platform }}/ffmpeg" 2>/dev/null || stat -f%z "assets/executables/${{ matrix.platform }}/ffmpeg" 2>/dev/null || echo "0")
+              size_mb=$((size / 1024 / 1024))
+              echo "FFmpeg: ${size_mb}MB"
               
-              echo "FFmpeg размер: ${size_mb}MB"
-              
-              # Показываем первые строки файла для диагностики
-              echo "Первые 5 строк FFmpeg файла:"
-              head -5 "assets/executables/${{ matrix.platform }}/ffmpeg" 2>/dev/null || echo "Не удалось прочитать файл"
-              
-              # Проверяем на Git LFS pointer в артефакте
-              if head -3 "assets/executables/${{ matrix.platform }}/ffmpeg" 2>/dev/null | grep -q "version.*oid.*size"; then
-                echo "❌ FFmpeg в артефакте все еще является Git LFS pointer"
-                exit 1
-              elif [ $size_mb -lt 50 ]; then
-                echo "❌ FFmpeg слишком мал - возможно это Git LFS pointer"
-                exit 1
+              if [ $size_mb -gt 50 ]; then
+                echo "✅ FFmpeg выглядит корректно"
               else
-                echo "✅ FFmpeg выглядит как настоящий бинарник"
+                echo "❌ FFmpeg слишком мал - проблема со скачиванием"
+                exit 1
               fi
-            else
-              echo "❌ FFmpeg не найден в артефакте"
-              exit 1
             fi
             
-            # Проверяем модели
-            bin_count=$(find "assets/executables/${{ matrix.platform }}/" -name "*.bin" 2>/dev/null | wc -l)
-            param_count=$(find "assets/executables/${{ matrix.platform }}/" -name "*.param" 2>/dev/null | wc -l)
-            echo "Модели: ${bin_count} .bin, ${param_count} .param файлов"
-            
-            if [ $bin_count -gt 0 ] && [ $param_count -gt 0 ]; then
-              echo "✅ Модели найдены для ${{ matrix.platform }}"
-            else
-              echo "❌ Модели не найдены для ${{ matrix.platform }}"
-              exit 1
-            fi
+            find "assets/executables/${{ matrix.platform }}/" -name "*.bin" | head -3
+            find "assets/executables/${{ matrix.platform }}/" -name "*.param" | head -3
+            echo "✅ Модели найдены для ${{ matrix.platform }}"
           else
-            echo "❌ Директория платформы не найдена"
+            echo "❌ Модели не найдены для ${{ matrix.platform }}"
             exit 1
           fi
 
-      # Установка Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -220,7 +147,6 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # Зависимости для Linux
       - name: Install Linux dependencies
         if: matrix.platform == 'linux'
         run: |
@@ -238,37 +164,30 @@ jobs:
             libglu1-mesa-dev \
             build-essential
 
-      # Зависимости для Windows
       - name: Setup Windows environment
         if: matrix.platform == 'windows'
         uses: microsoft/setup-msbuild@v2
 
-      # Проверка Flutter и Dart
       - name: Verify Flutter installation
         run: |
           flutter --version
           flutter doctor -v
-          
-      # Установка зависимостей проекта
+
       - name: Get Flutter dependencies
         run: flutter pub get
 
-      # Анализ кода
       - name: Analyze code
         run: flutter analyze --no-fatal-infos
         continue-on-error: true
 
-      # Запуск тестов
       - name: Run tests
         run: flutter test
         continue-on-error: true
 
-      # Включение desktop платформы
       - name: Enable desktop platform
         run: flutter config --enable-${{ matrix.flutter-target }}-desktop
 
-      # Сборка приложения
-      - name: Build ${{ matrix.platform }} application
+      - name: Build application
         shell: bash
         run: |
           echo "🔨 Сборка для ${{ matrix.platform }}..."
@@ -284,8 +203,7 @@ jobs:
             exit 1
           fi
 
-      # Упаковка сборки
-      - name: Package ${{ matrix.platform }} build
+      - name: Package build
         shell: bash
         run: |
           echo "📦 Упаковка сборки для ${{ matrix.platform }}..."
@@ -299,7 +217,6 @@ jobs:
             
           elif [[ "${{ matrix.platform }}" == "windows" ]]; then
             cd "${{ matrix.artifact-path }}"
-            # Используем PowerShell для Windows
             powershell -Command "Compress-Archive -Path './*' -DestinationPath '../../../../../video_upscaler_windows_x64.zip'"
             cd ../../../../../
             echo "✅ Created: video_upscaler_windows_x64.zip"
@@ -313,7 +230,6 @@ jobs:
             ls -lh video_upscaler_macos.zip
           fi
 
-      # Загрузка артефактов сборки
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -321,7 +237,6 @@ jobs:
           path: ${{ matrix.artifact-path }}
           retention-days: 30
 
-      # Загрузка упакованных файлов
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -332,7 +247,7 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # Создание релиза (только для тегов)
+  # Создание релиза
   release:
     name: Create Release
     needs: build
@@ -386,7 +301,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Проверка качества сборок
+  # Проверка сборок
   verify-builds:
     name: Verify All Builds
     needs: build
@@ -404,7 +319,6 @@ jobs:
         run: |
           echo "🔍 Проверка полноты сборок:"
           
-          # Проверяем что есть сборки для всех платформ
           platforms=("linux" "windows" "macos")
           for platform in "${platforms[@]}"; do
             if find builds/ -name "*$platform*" -type d | grep -q .; then
@@ -422,26 +336,3 @@ jobs:
               echo "  📄 $(basename "$file"): $size"
             fi
           done
-
-  # НОВЫЙ JOB: Диагностика Git LFS (для отладки)
-  debug-lfs:
-    name: Debug Git LFS
-    runs-on: ubuntu-latest
-    if: failure()
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          lfs: true
-
-      - name: LFS Debug Info
-        run: |
-          echo "🔍 Git LFS диагностика:"
-          git lfs version
-          git lfs ls-files
-          echo ""
-          echo "🔍 Статус LFS:"
-          git lfs status
-          echo ""
-          echo "🔍 LFS конфигурация:"
-          git lfs env
