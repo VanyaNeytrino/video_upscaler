@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 
 class ExecutableManager {
-  // ДОБАВЛЯЕМ СИНГЛТОН ПАТТЕРН
   static ExecutableManager? _instance;
   static ExecutableManager get instance {
     _instance ??= ExecutableManager._internal();
@@ -16,130 +15,68 @@ class ExecutableManager {
   Directory? executablesDir;
   bool _isInitialized = false;
 
-  // ДОБАВЛЯЕМ геттер для проверки инициализации
   bool get isInitialized => _isInitialized;
 
-  String get waifu2xPath {
-    if (executablesDir == null || !_isInitialized) {
-      throw Exception(
-          'ExecutableManager не инициализирован! Вызовите initializeExecutables() сначала.');
-    }
+  // Убираем дублирование логики платформы
+  String get _platformDir {
+    if (Platform.isMacOS) return 'macos';
+    if (Platform.isWindows) return 'windows';
+    return 'linux';
+  }
 
-    if (Platform.isMacOS) {
-      return path.join(executablesDir!.path, 'macos', 'waifu2x-ncnn-vulkan');
-    } else if (Platform.isWindows) {
-      return path.join(
-          executablesDir!.path, 'windows', 'waifu2x-ncnn-vulkan.exe');
-    } else {
-      return path.join(executablesDir!.path, 'linux', 'waifu2x-ncnn-vulkan');
-    }
+  String get _executableExtension => Platform.isWindows ? '.exe' : '';
+
+  String get waifu2xPath {
+    _checkInitialization();
+    return path.join(executablesDir!.path, _platformDir,
+        'waifu2x-ncnn-vulkan$_executableExtension');
   }
 
   String get ffmpegPath {
-    if (executablesDir == null || !_isInitialized) {
-      throw Exception(
-          'ExecutableManager не инициализирован! Вызовите initializeExecutables() сначала.');
-    }
-
-    if (Platform.isMacOS) {
-      return path.join(executablesDir!.path, 'macos', 'ffmpeg');
-    } else if (Platform.isWindows) {
-      return path.join(executablesDir!.path, 'windows', 'ffmpeg.exe');
-    } else {
-      return path.join(executablesDir!.path, 'linux', 'ffmpeg');
-    }
+    _checkInitialization();
+    return path.join(
+        executablesDir!.path, _platformDir, 'ffmpeg$_executableExtension');
   }
 
   String get modelsDir {
-    if (executablesDir == null || !_isInitialized) {
-      throw Exception(
-          'ExecutableManager не инициализирован! Вызовите initializeExecutables() сначала.');
-    }
-
-    final platformDir = Platform.isMacOS
-        ? 'macos'
-        : Platform.isWindows
-            ? 'windows'
-            : 'linux';
-    return path.join(executablesDir!.path, platformDir);
+    _checkInitialization();
+    return path.join(executablesDir!.path, _platformDir);
   }
 
   String getModelPath(String modelType) {
-    if (executablesDir == null || !_isInitialized) {
-      throw Exception(
-          'ExecutableManager не инициализирован! Вызовите initializeExecutables() сначала.');
-    }
+    _checkInitialization();
 
-    final platformDir = Platform.isMacOS
-        ? 'macos'
-        : Platform.isWindows
-            ? 'windows'
-            : 'linux';
+    final modelFolders = {
+      'cunet': 'models-cunet',
+      'anime': 'models-upconv_7_anime_style_art_rgb',
+      'photo': 'models-upconv_7_photo',
+    };
 
-    switch (modelType) {
-      case 'cunet':
-        return path.join(executablesDir!.path, platformDir, 'models-cunet');
-      case 'anime':
-        return path.join(executablesDir!.path, platformDir,
-            'models-upconv_7_anime_style_art_rgb');
-      case 'photo':
-        return path.join(
-            executablesDir!.path, platformDir, 'models-upconv_7_photo');
-      default:
-        return path.join(executablesDir!.path, platformDir, 'models-cunet');
-    }
+    final modelFolder = modelFolders[modelType] ?? 'models-cunet';
+    return path.join(executablesDir!.path, _platformDir, modelFolder);
   }
 
-  Future<Map<String, dynamic>> getInstallationSize() async {
-    if (executablesDir == null || !_isInitialized) {
-      return {
-        'error': 'ExecutableManager не инициализирован',
-        'total_size_bytes': 0,
-        'total_size_mb': '0.0',
-        'file_count': 0,
-      };
-    }
-
-    // ... остальной код метода остается тем же ...
-    int totalSizeBytes = 0;
-    int fileCount = 0;
+  // Упрощенный метод получения размера (убираем избыточную детализацию)
+  Future<int> getInstallationSizeBytes() async {
+    if (!_isInitialized || executablesDir == null) return 0;
 
     try {
-      final platformDir = Platform.isMacOS
-          ? 'macos'
-          : Platform.isWindows
-              ? 'windows'
-              : 'linux';
       final installDir =
-          Directory(path.join(executablesDir!.path, platformDir));
+          Directory(path.join(executablesDir!.path, _platformDir));
+      if (!await installDir.exists()) return 0;
 
-      if (await installDir.exists()) {
-        await for (final entity in installDir.list(recursive: true)) {
-          if (entity is File) {
-            final size = await entity.length();
-            totalSizeBytes += size;
-            fileCount++;
-          }
+      int totalSize = 0;
+      await for (final entity in installDir.list(recursive: true)) {
+        if (entity is File) {
+          totalSize += await entity.length();
         }
       }
-
-      return {
-        'total_size_bytes': totalSizeBytes,
-        'total_size_mb': (totalSizeBytes / 1024 / 1024).toStringAsFixed(2),
-        'file_count': fileCount,
-        'installation_path': installDir.path,
-      };
+      return totalSize;
     } catch (e) {
-      return {
-        'error': e.toString(),
-        'total_size_bytes': 0,
-        'total_size_mb': '0.0',
-        'file_count': 0,
-      };
+      return 0;
     }
   }
 
-  // ИСПРАВЛЕННАЯ инициализация
   Future<void> initializeExecutables() async {
     if (_isInitialized) {
       print('✅ ExecutableManager уже инициализирован');
@@ -152,11 +89,10 @@ class ExecutableManager {
     await _extractAllFromAssets();
     await _makeExecutablesExecutable();
 
-    _isInitialized = true; // УСТАНАВЛИВАЕМ ФЛАГ
+    _isInitialized = true;
     print('✅ ExecutableManager успешно инициализирован');
   }
 
-  // ОСТАЛЬНЫЕ МЕТОДЫ ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ...
   Future<void> _setupExecutablesDirectory() async {
     final appSupportDir = await _getApplicationSupportDirectory();
     executablesDir = Directory(path.join(appSupportDir.path, 'executables'));
@@ -166,57 +102,51 @@ class ExecutableManager {
     }
   }
 
+  // Убираем избыточное логирование размеров файлов
   Future<void> _extractAllFromAssets() async {
-    final platformDir = Platform.isMacOS
-        ? 'macos'
-        : Platform.isWindows
-            ? 'windows'
-            : 'linux';
-    print('Извлечение ВСЕХ файлов для платформы: $platformDir');
+    print('Извлечение файлов для платформы: $_platformDir');
 
     final assetManifest = await AssetManifest.loadFromAssetBundle(rootBundle);
     final assetKeys = assetManifest
         .listAssets()
-        .where((key) => key.startsWith('assets/executables/$platformDir/'))
+        .where((key) => key.startsWith('assets/executables/$_platformDir/'))
         .toList();
 
     print('Найдено ${assetKeys.length} файлов для извлечения');
 
     for (final assetKey in assetKeys) {
-      final relativePath =
-          assetKey.replaceFirst('assets/executables/$platformDir/', '');
-      final targetPath =
-          path.join(executablesDir!.path, platformDir, relativePath);
-
-      final targetDir = Directory(path.dirname(targetPath));
-      if (!await targetDir.exists()) {
-        await targetDir.create(recursive: true);
-      }
-
-      final byteData = await rootBundle.load(assetKey);
-      final bytes = byteData.buffer.asUint8List();
-
-      await File(targetPath).writeAsBytes(bytes);
-
-      if (assetKey.contains('models-') &&
-          (assetKey.endsWith('.bin') || assetKey.endsWith('.param'))) {
-        print(
-            'Извлечен файл модели: $relativePath (${(bytes.length / 1024 / 1024).toStringAsFixed(1)} MB)');
-      } else {
-        print('Извлечен: $relativePath');
-      }
+      await _extractSingleAsset(assetKey);
     }
   }
 
+  Future<void> _extractSingleAsset(String assetKey) async {
+    final relativePath =
+        assetKey.replaceFirst('assets/executables/$_platformDir/', '');
+    final targetPath =
+        path.join(executablesDir!.path, _platformDir, relativePath);
+
+    final targetDir = Directory(path.dirname(targetPath));
+    if (!await targetDir.exists()) {
+      await targetDir.create(recursive: true);
+    }
+
+    final byteData = await rootBundle.load(assetKey);
+    final bytes = byteData.buffer.asUint8List();
+    await File(targetPath).writeAsBytes(bytes);
+
+    // Упрощенное логирование без размеров
+    print('Извлечен: $relativePath');
+  }
+
   Future<void> _makeExecutablesExecutable() async {
-    if (!Platform.isWindows) {
-      try {
-        await Process.run('chmod', ['+x', waifu2xPath]);
-        await Process.run('chmod', ['+x', ffmpegPath]);
-        print('Исполняемые файлы сделаны исполняемыми');
-      } catch (e) {
-        print('Ошибка при установке прав доступа: $e');
-      }
+    if (Platform.isWindows) return;
+
+    try {
+      await Process.run('chmod', ['+x', waifu2xPath]);
+      await Process.run('chmod', ['+x', ffmpegPath]);
+      print('Исполняемые файлы сделаны исполняемыми');
+    } catch (e) {
+      print('Ошибка при установке прав доступа: $e');
     }
   }
 
@@ -228,6 +158,7 @@ class ExecutableManager {
 
     print('🔍 Проверка установки исполняемых файлов...');
 
+    // Простая проверка существования файлов
     if (!await File(waifu2xPath).exists()) {
       print('❌ waifu2x не найден');
       return false;
@@ -239,7 +170,7 @@ class ExecutableManager {
     }
 
     if (!await _validateModelFiles()) {
-      print('❌ Некорректные файлы модели');
+      print('❌ Файлы модели не найдены');
       return false;
     }
 
@@ -247,17 +178,15 @@ class ExecutableManager {
     return true;
   }
 
+  // Упрощенная валидация без детального анализа размеров
   Future<bool> _validateModelFiles() async {
-    print('🔍 ПРОВЕРКА ФАЙЛОВ МОДЕЛИ');
-
     final modelPath = getModelPath('cunet');
 
     if (!await Directory(modelPath).exists()) {
-      print('❌ Директория модели не существует: $modelPath');
       return false;
     }
 
-    final files = await Directory(modelPath)
+    final modelFiles = await Directory(modelPath)
         .list()
         .where((entity) =>
             entity is File &&
@@ -265,24 +194,7 @@ class ExecutableManager {
         .cast<File>()
         .toList();
 
-    if (files.isEmpty) {
-      print('❌ Нет файлов модели в: $modelPath');
-      return false;
-    }
-
-    for (final file in files) {
-      final size = await file.length();
-      final name = path.basename(file.path);
-
-      print('📄 $name: ${(size / 1024 / 1024).toStringAsFixed(1)} MB');
-
-      if (size < 100 * 1024) {
-        print('🚨 ПОДОЗРИТЕЛЬНО МАЛЕНЬКИЙ ФАЙЛ: $name (${size} bytes)');
-        return false;
-      }
-    }
-
-    return true;
+    return modelFiles.isNotEmpty;
   }
 
   Future<Directory> _getApplicationSupportDirectory() async {
@@ -298,11 +210,18 @@ class ExecutableManager {
     }
   }
 
-  Future<void> _cleanupExecutables() async {
+  Future<void> cleanupExecutables() async {
     if (executablesDir != null && await executablesDir!.exists()) {
       await executablesDir!.delete(recursive: true);
       _isInitialized = false;
       print('Очистка исполняемых файлов завершена');
+    }
+  }
+
+  void _checkInitialization() {
+    if (executablesDir == null || !_isInitialized) {
+      throw Exception(
+          'ExecutableManager не инициализирован! Вызовите initializeExecutables() сначала.');
     }
   }
 }

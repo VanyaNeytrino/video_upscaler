@@ -6,6 +6,7 @@ import 'package:video_upscaler/services/executable_manager.dart';
 import 'package:video_upscaler/services/video_processing_service.dart';
 import 'package:video_upscaler/services/system_info_service.dart';
 import 'package:video_upscaler/models/processing_config.dart';
+import 'package:video_upscaler/screens/video_slicer_screen.dart'; // НОВЫЙ ИМПОРТ
 
 void main() {
   runApp(VideoUpscalerApp());
@@ -153,6 +154,19 @@ class _VideoUpscalerHomeState extends State<VideoUpscalerHome>
         _showErrorDialog('Ошибка инициализации', e.toString());
       }
     }
+  }
+
+  // НОВЫЙ МЕТОД: Переход на экран нарезки видео
+  void _openVideoSlicer() {
+    if (!_isInitialized) {
+      _showErrorDialog('Ошибка',
+          'Приложение еще не инициализировано. Подождите завершения инициализации.');
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => VideoSlicerScreen()),
+    );
   }
 
   // НОВЫЙ МЕТОД: Применение оптимальных настроек
@@ -1367,7 +1381,7 @@ class _VideoUpscalerHomeState extends State<VideoUpscalerHome>
         child: SafeArea(
           child: Column(
             children: [
-              // Современный AppBar
+              // ОБНОВЛЕННЫЙ AppBar с кнопкой нарезки
               Container(
                 padding: const EdgeInsets.all(20),
                 child: Row(
@@ -1385,28 +1399,76 @@ class _VideoUpscalerHomeState extends State<VideoUpscalerHome>
                       ),
                     ),
                     const SizedBox(width: 16),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Video Upscaler Pro',
-                          style: Theme.of(context)
-                              .textTheme
-                              .headlineMedium
-                              ?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Video Upscaler Pro',
+                            style: Theme.of(context)
+                                .textTheme
+                                .headlineMedium
+                                ?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                          ),
+                          Text(
+                            'AI-powered video enhancement',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // НОВАЯ КНОПКА: Переход на экран нарезки
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.secondaryContainer,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: IconButton(
+                        onPressed: _openVideoSlicer,
+                        icon: Icon(
+                          Icons.content_cut,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSecondaryContainer,
                         ),
-                        Text(
-                          'AI-powered video enhancement',
-                          style:
-                              Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
+                        tooltip: 'Нарезка видео',
+                        iconSize: 24,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.tertiaryContainer,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: IconButton(
+                        onPressed: () {
+                          // Здесь можно добавить другие функции в будущем
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Дополнительные функции скоро!'),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        },
+                        icon: Icon(
+                          Icons.more_vert,
+                          color:
+                              Theme.of(context).colorScheme.onTertiaryContainer,
                         ),
-                      ],
+                        tooltip: 'Дополнительно',
+                        iconSize: 24,
+                      ),
                     ),
                   ],
                 ),
@@ -1470,5 +1532,46 @@ class _VideoUpscalerHomeState extends State<VideoUpscalerHome>
     _tabController.dispose();
     _animationController.dispose();
     super.dispose();
+  }
+}
+
+// ЗАГЛУШКИ для отсутствующих классов (добавьте в отдельные файлы)
+class ModelTypes {
+  static String getDescription(String modelType) {
+    switch (modelType) {
+      case 'cunet':
+        return 'Универсальная модель для любого контента';
+      case 'anime':
+        return 'Оптимизирована для аниме и рисованного контента';
+      case 'photo':
+        return 'Специально для фотографий и реалистичного контента';
+      default:
+        return 'Неизвестная модель';
+    }
+  }
+}
+
+class ConfigValidator {
+  static List<String> validateConfig(ProcessingConfig config) {
+    List<String> errors = [];
+
+    if (config.inputVideoPath.isEmpty) {
+      errors.add('Не выбран входной видеофайл');
+    }
+
+    if (config.outputPath.isEmpty) {
+      errors.add('Не выбран путь для сохранения');
+    }
+
+    if (!ProcessingConfig.validScaleFactors.contains(config.scaleFactor)) {
+      errors.add('Неподдерживаемый масштаб: ${config.scaleFactor}x');
+    }
+
+    if (!ProcessingConfig.validNoiselevels.contains(config.scaleNoise)) {
+      errors
+          .add('Неподдерживаемый уровень шумоподавления: ${config.scaleNoise}');
+    }
+
+    return errors;
   }
 }

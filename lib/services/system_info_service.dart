@@ -450,8 +450,6 @@ class SystemInfoService {
         details['waifu2x_path'] = executableManager.waifu2xPath;
         details['ffmpeg_path'] = executableManager.ffmpegPath;
         details['models_dir'] = executableManager.modelsDir;
-        details['installation_size'] =
-            await executableManager.getInstallationSize();
         details['installation_valid'] =
             await executableManager.validateInstallation();
         details['optimal_settings'] = await getOptimalSettings();

@@ -53,4 +53,5 @@ assets/executables/macos/models-upconv_7_anime_style_art_rgb/
 assets/executables/macos/models-upconv_7_photo/
 assets/executables/windows/models-cunet/
 assets/executables/windows/models-upconv_7_anime_style_art_rgb/
-assets/executables/windows/models-upconv_7_photo/
+assets/executables/windows/models-upconv_7_photo/.DS_Store
+**/.DS_Store
