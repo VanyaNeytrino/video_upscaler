@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:math';
+import 'dart:convert';
 import 'package:path/path.dart' as path;
 import 'package:video_upscaler/models/processing_config.dart';
 import 'package:video_upscaler/services/executable_manager.dart';
@@ -18,8 +19,6 @@ class VideoProcessingService {
 
   bool _isProcessing = false;
   String? _tempBasePath;
-  int _totalFrames = 0;
-  DateTime? _startTime;
 
   bool get isProcessing => _isProcessing;
 
@@ -29,19 +28,9 @@ class VideoProcessingService {
     }
 
     _isProcessing = true;
-    _startTime = DateTime.now();
 
     try {
-      // Запускаем мониторинг ресурсов
-      ResourceMonitor.instance.startMonitoring();
-
       _updateProgress('Проверка инициализации ExecutableManager...', 0.0);
-      ResourceMonitor.instance.updateProgress(
-        processedFrames: 0,
-        totalFrames: 0,
-        currentStage: 'Инициализация системы...',
-      );
-
       final executableManager = ExecutableManager.instance;
 
       if (!await executableManager.validateInstallation()) {
@@ -50,12 +39,6 @@ class VideoProcessingService {
       }
 
       _updateProgress('Анализ системы и оптимизация параметров...', 5.0);
-      ResourceMonitor.instance.updateProgress(
-        processedFrames: 0,
-        totalFrames: 0,
-        currentStage: 'Анализ системы...',
-      );
-
       final systemInfo = await SystemInfoService.analyzeSystem();
 
       // Получаем информацию о входном видео
@@ -74,97 +57,87 @@ class VideoProcessingService {
       print('Оптимизация: $optimizedParams');
 
       _updateProgress('Создание временных директорий...', 10.0);
-      ResourceMonitor.instance.updateProgress(
-        processedFrames: 0,
-        totalFrames: 0,
-        currentStage: 'Подготовка файлов...',
-      );
-
       final tempDir = await _createTempDirectories();
 
       _updateProgress('Извлечение кадров из видео...', 15.0);
-      ResourceMonitor.instance.updateProgress(
-        processedFrames: 0,
-        totalFrames: 0,
-        currentStage: 'Извлечение кадров...',
-      );
-
       await _extractFrames(
           config.inputVideoPath, tempDir['frames']!, optimizedParams);
 
-      // Подсчитываем общее количество кадров
-      final framesList = await Directory(tempDir['frames']!)
+      // Подсчитываем кадры для мониторинга прогресса
+      final frameFiles = await Directory(tempDir['frames']!)
           .list()
-          .where((entity) => entity is File && entity.path.endsWith('.png'))
+          .where((f) => f.path.endsWith('.png'))
           .toList();
-      _totalFrames = framesList.length;
+      final totalFrames = frameFiles.length;
 
-      print('📸 Общее количество кадров: $_totalFrames');
+      print('📸 Всего кадров для обработки: $totalFrames');
 
       _updateProgress('Извлечение аудиодорожки...', 25.0);
-      ResourceMonitor.instance.updateProgress(
-        processedFrames: 0,
-        totalFrames: _totalFrames,
-        currentStage: 'Извлечение аудио...',
-      );
-
       final hasAudio =
           await _extractAudio(config.inputVideoPath, tempDir['audio']!);
 
       _updateProgress('AI апскейлинг кадров...', 30.0);
+
+      // Обновляем ResourceMonitor с информацией о кадрах
       ResourceMonitor.instance.updateProgress(
         processedFrames: 0,
-        totalFrames: _totalFrames,
+        totalFrames: totalFrames,
         currentStage: 'AI апскейлинг кадров...',
       );
 
-      await _upscaleFramesWithProgress(tempDir['frames']!, tempDir['scaled']!,
-          config, systemInfo, optimizedParams);
+      await _upscaleFramesWithProgress(
+        tempDir['frames']!,
+        tempDir['scaled']!,
+        config,
+        systemInfo,
+        optimizedParams,
+        totalFrames,
+      );
 
       _updateProgress('Сборка финального видео...', 85.0);
+
       ResourceMonitor.instance.updateProgress(
-        processedFrames: _totalFrames,
-        totalFrames: _totalFrames,
-        currentStage: 'Сборка видео...',
+        processedFrames: totalFrames,
+        totalFrames: totalFrames,
+        currentStage: 'Сборка финального видео...',
       );
 
-      final outputPath = await _assembleVideo(tempDir['scaled']!,
-          tempDir['audio']!, config, hasAudio, optimizedParams);
+      final outputPath = await _assembleVideo(
+        tempDir['scaled']!,
+        tempDir['audio']!,
+        config,
+        hasAudio,
+        optimizedParams,
+      );
 
       _updateProgress('Очистка временных файлов...', 95.0);
-      ResourceMonitor.instance.updateProgress(
-        processedFrames: _totalFrames,
-        totalFrames: _totalFrames,
-        currentStage: 'Завершение...',
-      );
-
       await _cleanupTempFiles();
 
       _updateProgress('Обработка завершена успешно!', 100.0);
+
       ResourceMonitor.instance.updateProgress(
-        processedFrames: _totalFrames,
-        totalFrames: _totalFrames,
-        currentStage: 'Готово!',
+        processedFrames: totalFrames,
+        totalFrames: totalFrames,
+        currentStage: 'Завершено успешно!',
       );
 
       return outputPath;
     } catch (e) {
       _updateProgress('Ошибка: $e', 0.0);
+      await _cleanupTempFiles();
+
       ResourceMonitor.instance.updateProgress(
         processedFrames: 0,
-        totalFrames: _totalFrames,
+        totalFrames: 0,
         currentStage: 'Ошибка обработки',
       );
-      await _cleanupTempFiles();
+
       rethrow;
     } finally {
       _isProcessing = false;
-      // Останавливаем мониторинг ресурсов
-      ResourceMonitor.instance.stopMonitoring();
     }
   }
 
-  // Анализ входного видео для оптимизации
   Future<Map<String, dynamic>> _analyzeInputVideo(String videoPath) async {
     final executableManager = ExecutableManager.instance;
     final ffmpegPath = executableManager.ffmpegPath;
@@ -172,20 +145,16 @@ class VideoProcessingService {
     print('🎬 Анализ видео: $videoPath');
 
     final result = await Process.run(
-        ffmpegPath,
-        [
-          '-i',
-          videoPath,
-          '-hide_banner',
-        ],
-        runInShell: Platform.isWindows);
+      ffmpegPath,
+      ['-i', videoPath, '-hide_banner'],
+      runInShell: Platform.isWindows,
+    );
 
     final output = result.stderr.toString();
     print('📹 FFmpeg вывод: $output');
 
-    // УЛУЧШЕННЫЙ парсинг информации о видео
-    final RegExp resolutionRegex =
-        RegExp(r'(\d{2,})x(\d{2,})'); // Минимум 2 цифры
+    // Улучшенный парсинг информации о видео
+    final RegExp resolutionRegex = RegExp(r'(\d{2,})x(\d{2,})');
     final RegExp fpsRegex = RegExp(r'(\d+(?:\.\d+)?)\s*fps');
     final RegExp bitrateRegex = RegExp(r'(\d+)\s*kb/s');
 
@@ -213,11 +182,11 @@ class VideoProcessingService {
     };
   }
 
-  // Получение оптимизированных параметров под железо
   Future<Map<String, dynamic>> _getOptimizedParameters(
-      SystemCapabilities systemInfo,
-      Map<String, dynamic> videoInfo,
-      ProcessingConfig config) async {
+    SystemCapabilities systemInfo,
+    Map<String, dynamic> videoInfo,
+    ProcessingConfig config,
+  ) async {
     final inputWidth = videoInfo['width'] as int;
     final inputHeight = videoInfo['height'] as int;
     final inputFPS = videoInfo['fps'] as double;
@@ -227,43 +196,20 @@ class VideoProcessingService {
     final outputHeight = inputHeight * scaleFactor;
     final totalPixels = outputWidth * outputHeight;
 
-    // Получаем системные возможности для ExecutableManager
-    final systemCapabilities = {
-      'has_vulkan': systemInfo.supportsGPU,
-      'available_gpus': systemInfo.availableGPUs,
-      'cpu_cores': systemInfo.cpuCores,
-      'memory_info': {
-        'total_gb': systemInfo.totalMemoryGB,
-      },
-      'platform': systemInfo.platform,
-    };
-
-    // Используем новые методы из ExecutableManager для оптимизации
-    final optimalArgs = ExecutableManager.instance.getOptimalWaifu2xArgs(
-      inputPath: 'dummy', // Заполним позже
-      outputPath: 'dummy', // Заполним позже
-      modelPath: 'dummy', // Заполним позже
-      systemCapabilities: systemCapabilities,
-      scale: config.scaleFactor,
-      noise: config.scaleNoise,
-      useGPU: systemInfo.supportsGPU,
-      enableTTA: false, // Для скорости
-      format: 'png',
-    );
-
     // Параметры waifu2x на основе железа
     Map<String, dynamic> waifu2xParams =
         _getWaifu2xParameters(systemInfo, scaleFactor);
 
     // Параметры FFmpeg на основе разрешения и железа
     Map<String, dynamic> ffmpegParams = _getFFmpegParameters(
-        systemInfo,
-        inputWidth,
-        inputHeight,
-        outputWidth,
-        outputHeight,
-        inputFPS,
-        scaleFactor);
+      systemInfo,
+      inputWidth,
+      inputHeight,
+      outputWidth,
+      outputHeight,
+      inputFPS,
+      scaleFactor,
+    );
 
     return {
       'output_width': outputWidth,
@@ -271,51 +217,47 @@ class VideoProcessingService {
       'total_pixels': totalPixels,
       'waifu2x': waifu2xParams,
       'ffmpeg': ffmpegParams,
-      'optimal_args': optimalArgs,
     };
   }
 
-  // УНИВЕРСАЛЬНЫЕ параметры waifu2x для всех платформ
   Map<String, dynamic> _getWaifu2xParameters(
       SystemCapabilities systemInfo, int scaleFactor) {
     final memoryGB = systemInfo.totalMemoryGB;
     final cpuCores = systemInfo.cpuCores;
     final platform = systemInfo.platform;
 
-    // ИСПРАВЛЯЕМ scale factor - только 1, 2, 4 поддерживаются!
+    // Исправляем scale factor - только 1, 2, 4 поддерживаются!
     int validScaleFactor = scaleFactor;
     if (![1, 2, 4].contains(validScaleFactor)) {
       if (validScaleFactor == 3) {
-        validScaleFactor = 2; // 3x не поддерживается
+        validScaleFactor = 2;
         print('⚠️ Масштаб 3x не поддерживается, используем 2x');
       } else if (validScaleFactor > 4) {
-        validScaleFactor = 4; // Максимум 4x
+        validScaleFactor = 4;
         print('⚠️ Масштаб больше 4x не поддерживается, используем 4x');
       } else {
-        validScaleFactor = 2; // По умолчанию 2x
+        validScaleFactor = 2;
         print('⚠️ Неподдерживаемый масштаб, используем 2x');
       }
     }
 
     int tileSize = 0; // auto по умолчанию
     int threads = (cpuCores / 2).round().clamp(1, 4);
-    int gpuDevice = 0; // По умолчанию GPU
+    int gpuDevice = 0;
 
     // Платформо-специфичные настройки
     if (platform == 'macos') {
-      // Apple Silicon - оптимизированные настройки
       gpuDevice = 0;
-      if (memoryGB >= 16) {
-        tileSize = validScaleFactor >= 4 ? 128 : 256; // Увеличено для 16GB+
-      } else if (memoryGB >= 8) {
-        tileSize = validScaleFactor >= 4 ? 64 : 128;
+      if (validScaleFactor >= 4) {
+        tileSize = 32;
+      } else if (validScaleFactor >= 2) {
+        tileSize = 64;
       } else {
-        tileSize = 32; // Консервативно для <8GB
+        tileSize = 0;
       }
       print(
-          '🍎 Apple Silicon оптимизация: GPU=0, tileSize=$tileSize для ${validScaleFactor}x');
+          '🍎 Apple Silicon: GPU=0, tileSize=$tileSize для ${validScaleFactor}x');
     } else if (platform == 'windows' || platform == 'linux') {
-      // Для других платформ
       if (systemInfo.supportsGPU && systemInfo.availableGPUs.isNotEmpty) {
         gpuDevice = 0;
         if (memoryGB >= 16) {
@@ -326,7 +268,6 @@ class VideoProcessingService {
           tileSize = 100;
         }
       } else {
-        // CPU fallback
         gpuDevice = -1;
         tileSize = validScaleFactor >= 4 ? 50 : 100;
         threads = cpuCores.clamp(1, 8);
@@ -342,43 +283,37 @@ class VideoProcessingService {
     };
   }
 
-  // Оптимизированные параметры FFmpeg
   Map<String, dynamic> _getFFmpegParameters(
-      SystemCapabilities systemInfo,
-      int inputWidth,
-      int inputHeight,
-      int outputWidth,
-      int outputHeight,
-      double inputFPS,
-      int scaleFactor) {
+    SystemCapabilities systemInfo,
+    int inputWidth,
+    int inputHeight,
+    int outputWidth,
+    int outputHeight,
+    double inputFPS,
+    int scaleFactor,
+  ) {
     final totalPixels = outputWidth * outputHeight;
     final memoryGB = systemInfo.totalMemoryGB;
 
-    // Выбор кодека на основе разрешения
     String videoCodec = 'libx264';
     String preset = 'medium';
     int crf = 23;
     String pixFormat = 'yuv420p';
 
-    // Для высоких разрешений используем H.265
     if (totalPixels >= 3840 * 2160) {
-      // 4K и выше
       videoCodec = 'libx265';
-      crf = 18; // Высокое качество для 4K
+      crf = 18;
       preset = memoryGB >= 16 ? 'slow' : 'medium';
-      pixFormat = 'yuv420p10le'; // 10-bit для лучшего качества
+      pixFormat = 'yuv420p10le';
     } else if (totalPixels >= 2560 * 1440) {
-      // 1440p
       videoCodec = 'libx264';
       crf = 20;
       preset = memoryGB >= 8 ? 'slow' : 'medium';
     } else {
-      // 1080p и ниже
       crf = 23;
       preset = 'medium';
     }
 
-    // Расчет оптимального битрейта
     final bitrate = _calculateOptimalBitrate(
         outputWidth, outputHeight, inputFPS, scaleFactor);
     final maxrate = (bitrate * 1.5).round();
@@ -396,30 +331,22 @@ class VideoProcessingService {
     };
   }
 
-  // Расчет оптимального битрейта на основе разрешения
   int _calculateOptimalBitrate(
       int width, int height, double fps, int scaleFactor) {
     final totalPixels = width * height;
     final pixelsPerSecond = totalPixels * fps;
 
-    // Базовый битрейт на пиксель (бит/пиксель/секунда)
     double bitsPerPixel;
-
     if (totalPixels >= 3840 * 2160) {
-      // 4K
-      bitsPerPixel = 0.15; // Высокое качество для 4K
+      bitsPerPixel = 0.15;
     } else if (totalPixels >= 2560 * 1440) {
-      // 1440p
       bitsPerPixel = 0.12;
     } else if (totalPixels >= 1920 * 1080) {
-      // 1080p
       bitsPerPixel = 0.10;
     } else {
-      // Ниже 1080p
       bitsPerPixel = 0.08;
     }
 
-    // Увеличиваем битрейт для больших масштабов (больше деталей)
     if (scaleFactor >= 4) {
       bitsPerPixel *= 1.5;
     } else if (scaleFactor >= 2) {
@@ -427,9 +354,7 @@ class VideoProcessingService {
     }
 
     final bitrateKbps = (pixelsPerSecond * bitsPerPixel / 1000).round();
-
-    // Ограничения
-    return bitrateKbps.clamp(1000, 50000); // От 1Mbps до 50Mbps
+    return bitrateKbps.clamp(1000, 50000);
   }
 
   Future<Map<String, String>> _createTempDirectories() async {
@@ -452,7 +377,6 @@ class VideoProcessingService {
     return directories;
   }
 
-  // Оптимизированное извлечение кадров
   Future<void> _extractFrames(
       String videoPath, String framesDir, Map<String, dynamic> params) async {
     final executableManager = ExecutableManager.instance;
@@ -462,11 +386,14 @@ class VideoProcessingService {
     print('Извлечение кадров: $videoPath -> $framesDir');
 
     final args = [
-      '-i', videoPath,
-      '-vf', 'fps=${ffmpegParams['fps']}', // Оптимизированный FPS
+      '-i',
+      videoPath,
+      '-vf',
+      'fps=${ffmpegParams['fps']}',
       path.join(framesDir, 'frame_%06d.png'),
       '-hide_banner',
-      '-loglevel', 'error',
+      '-loglevel',
+      'error',
     ];
 
     final result =
@@ -487,19 +414,20 @@ class VideoProcessingService {
     print('Извлечение аудио: $videoPath -> $audioPath');
 
     final result = await Process.run(
-        ffmpegPath,
-        [
-          '-i',
-          videoPath,
-          '-vn',
-          '-acodec',
-          'copy',
-          audioPath,
-          '-hide_banner',
-          '-loglevel',
-          'error',
-        ],
-        runInShell: Platform.isWindows);
+      ffmpegPath,
+      [
+        '-i',
+        videoPath,
+        '-vn',
+        '-acodec',
+        'copy',
+        audioPath,
+        '-hide_banner',
+        '-loglevel',
+        'error',
+      ],
+      runInShell: Platform.isWindows,
+    );
 
     final audioFile = File(audioPath);
     final hasAudio = await audioFile.exists() && await audioFile.length() > 0;
@@ -513,109 +441,102 @@ class VideoProcessingService {
     return hasAudio;
   }
 
-  // ОБНОВЛЕННЫЙ метод апскейлинга с отслеживанием прогресса
+  // ИСПРАВЛЕННЫЙ метод upscale с отслеживанием прогресса
   Future<void> _upscaleFramesWithProgress(
     String framesDir,
     String scaledDir,
     ProcessingConfig config,
     SystemCapabilities systemInfo,
     Map<String, dynamic> optimizedParams,
+    int totalFrames,
   ) async {
     final executableManager = ExecutableManager.instance;
     final waifu2xPath = executableManager.waifu2xPath;
+    final waifu2xParams = optimizedParams['waifu2x'] as Map<String, dynamic>;
 
-    print('🎯 OPTIMIZED апскейлинг с отслеживанием прогресса');
+    print('🎯 Исправленный апскейлинг с отслеживанием прогресса');
     print('⚙️ Платформа: ${systemInfo.platform}');
 
     if (!await File(waifu2xPath).exists()) {
       throw Exception('waifu2x-ncnn-vulkan не найден: $waifu2xPath');
     }
 
-    // Получаем системные возможности для оптимизации
-    final systemCapabilities = {
-      'has_vulkan': systemInfo.supportsGPU,
-      'available_gpus': systemInfo.availableGPUs,
-      'cpu_cores': systemInfo.cpuCores,
-      'memory_info': {
-        'total_gb': systemInfo.totalMemoryGB,
-      },
-      'platform': systemInfo.platform,
-    };
+    // Используем безопасные параметры
+    int validScaleFactor = waifu2xParams['valid_scale_factor'];
+    int validNoise = 0; // Безопасное значение
 
-    // Получаем оптимальную модель
+    // Получаем путь к модели
     final modelPath =
         executableManager.getModelPath(config.modelType ?? 'cunet');
 
-    // Создаем оптимизированные аргументы
-    final args = executableManager.getOptimalWaifu2xArgs(
-      inputPath: framesDir,
-      outputPath: scaledDir,
-      modelPath: modelPath,
-      systemCapabilities: systemCapabilities,
-      scale: config.scaleFactor,
-      noise: config.scaleNoise,
-      useGPU: systemInfo.supportsGPU,
-      enableTTA: false, // Для скорости
-      format: 'png',
-    );
+    print(
+        '🔒 Безопасные параметры: scale=${validScaleFactor}x, noise=$validNoise');
+    print('📁 Модель: $modelPath');
 
-    print('🚀 ОПТИМИЗИРОВАННАЯ команда: ${args.join(' ')}');
+    // ИСПРАВЛЕННЫЕ аргументы waifu2x
+    final args = [
+      '-i', framesDir,
+      '-o', scaledDir,
+      '-n', validNoise.toString(),
+      '-s', validScaleFactor.toString(),
+      '-m', modelPath,
+      '-g', waifu2xParams['gpu_device'].toString(),
+      '-t', waifu2xParams['tile_size'].toString(),
+      '-j', '1:${waifu2xParams['threads']}:1', // load:proc:save
+      '-f', 'png',
+      '-v',
+    ];
 
-    // Запускаем процесс с отслеживанием прогресса
+    print('🚀 Команда waifu2x: ${args.join(' ')}');
+
+    // Запускаем процесс
     final process =
         await Process.start(waifu2xPath, args, runInShell: Platform.isWindows);
 
-    String output = '';
-    String errorOutput = '';
-
-    // Отслеживаем прогресс через файлы
-    Timer? progressTimer;
-    progressTimer = Timer.periodic(Duration(seconds: 2), (timer) async {
+    // Отслеживаем прогресс в реальном времени
+    Timer? progressTimer = Timer.periodic(Duration(seconds: 1), (timer) async {
       try {
         final processedFiles = await Directory(scaledDir)
             .list()
-            .where((entity) => entity is File && entity.path.endsWith('.png'))
+            .where((f) => f.path.endsWith('.png'))
             .length;
 
-        if (processedFiles > 0) {
-          final currentProgress = processedFiles;
+        final progressPercent =
+            (processedFiles / totalFrames * 55).clamp(0, 55);
 
-          // Обновляем прогресс
-          ResourceMonitor.instance.updateProgress(
-            processedFrames: currentProgress,
-            totalFrames: _totalFrames,
-            currentStage: 'AI апскейлинг кадров...',
-            currentFile:
-                'frame_${currentProgress.toString().padLeft(6, '0')}.png',
-          );
+        _updateProgress(
+          'AI апскейлинг: $processedFiles/$totalFrames кадров...',
+          30.0 + progressPercent,
+        );
 
-          // Обновляем процент для старого интерфейса
-          final progressPercent =
-              (currentProgress / _totalFrames * 55).clamp(0, 55);
-          _updateProgress(
-              'AI апскейлинг: $currentProgress/$_totalFrames кадров...',
-              30.0 + progressPercent);
+        // Обновляем ResourceMonitor
+        ResourceMonitor.instance.updateProgress(
+          processedFrames: processedFiles,
+          totalFrames: totalFrames,
+          currentStage: 'AI апскейлинг кадров...',
+          currentFile: processedFiles > 0
+              ? 'frame_${processedFiles.toString().padLeft(6, '0')}.png'
+              : null,
+        );
 
-          // Останавливаем таймер если все кадры обработаны
-          if (currentProgress >= _totalFrames) {
-            timer.cancel();
-          }
+        if (processedFiles >= totalFrames) {
+          timer.cancel();
         }
       } catch (e) {
-        // Игнорируем ошибки мониторинга
+        // Игнорируем ошибки подсчета
       }
     });
 
     // Обрабатываем вывод процесса
+    String errorOutput = '';
+
     process.stdout.transform(SystemEncoding().decoder).listen((data) {
-      output += data;
-      if (!data.contains('find_blob_index_by_name')) {
-        print('📤 waifu2x stdout: $data');
-      }
+      print('📤 waifu2x stdout: $data');
     });
 
     process.stderr.transform(SystemEncoding().decoder).listen((data) {
       errorOutput += data;
+      // Игнорируем технические сообщения find_blob_index_by_name
       if (!data.contains('find_blob_index_by_name')) {
         print('📥 waifu2x stderr: $data');
       }
@@ -628,23 +549,28 @@ class VideoProcessingService {
     print('⚡ waifu2x завершен с кодом: $exitCode');
 
     // Проверяем результаты
-    final scaledFrames = await Directory(scaledDir)
+    final processedFiles = await Directory(scaledDir)
         .list()
-        .where((entity) => entity is File && entity.path.endsWith('.png'))
-        .toList();
+        .where((f) => f.path.endsWith('.png'))
+        .length;
 
-    print('📊 Результат: ${scaledFrames.length}/$_totalFrames кадров');
+    print('📊 Результат: $processedFiles/$totalFrames кадров обработано');
 
-    if (scaledFrames.length < _totalFrames * 0.8) {
+    if (processedFiles < totalFrames * 0.8) {
       throw Exception(
-          'Апскейлинг неудачен: обработано только ${scaledFrames.length}/$_totalFrames кадров');
+          'Обработано слишком мало кадров: $processedFiles/$totalFrames');
     }
 
-    print(
-        '✅ Апскейлинг завершен успешно: ${scaledFrames.length}/$_totalFrames');
+    // Финальное обновление прогресса
+    ResourceMonitor.instance.updateProgress(
+      processedFrames: processedFiles,
+      totalFrames: totalFrames,
+      currentStage: 'AI апскейлинг завершен',
+    );
+
+    print('✅ Апскейлинг успешно завершен');
   }
 
-  // ИСПРАВЛЕННАЯ сборка видео с ПРОСТЫМИ параметрами
   Future<String> _assembleVideo(
     String scaledDir,
     String audioPath,
@@ -654,88 +580,79 @@ class VideoProcessingService {
   ) async {
     final executableManager = ExecutableManager.instance;
     final ffmpegPath = executableManager.ffmpegPath;
+    final ffmpegParams = optimizedParams['ffmpeg'] as Map<String, dynamic>;
 
-    print('🎬 Сборка видео: $scaledDir -> ${config.outputPath}');
+    print('🎬 Сборка финального видео');
 
-    // ПРОВЕРЯЕМ что кадры действительно существуют
-    final scaledFrames = await Directory(scaledDir)
-        .list()
-        .where((entity) => entity is File && entity.path.endsWith('.png'))
-        .toList();
+    final outputPath = config.outputPath;
+    final framePattern = path.join(scaledDir, 'frame_%06d.png');
 
-    if (scaledFrames.isEmpty) {
-      throw Exception('Нет кадров для сборки видео в: $scaledDir');
-    }
-
-    print('📸 Найдено кадров для сборки: ${scaledFrames.length}');
-
-    // ПРОСТЫЕ ПАРАМЕТРЫ
-    final List<String> args = [
-      '-y', // Перезаписать выходной файл
-      '-framerate', '30', // Фиксированный framerate
-      '-i', path.join(scaledDir, 'frame_%06d.png'),
-
-      // Простые параметры H.264
-      '-c:v', 'libx264',
-      '-crf', '18', // Хорошее качество
-      '-preset', 'medium',
-      '-pix_fmt', 'yuv420p',
-
-      '-r', '30', // Выходной framerate
+    List<String> args = [
+      '-framerate',
+      ffmpegParams['fps'].toString(),
+      '-i',
+      framePattern,
     ];
 
-    // Обработка аудио
-    if (hasAudio && await File(audioPath).exists()) {
-      print('🔊 Добавляем аудиодорожку');
-      args.addAll([
-        '-i',
-        audioPath,
-        '-c:a',
-        'aac',
-        '-b:a',
-        '128k',
-        '-shortest',
-      ]);
-    } else {
-      print('🔇 Видео без аудио');
-      args.add('-an');
+    if (hasAudio) {
+      args.addAll(['-i', audioPath]);
     }
 
-    // Финальные параметры
     args.addAll([
-      '-movflags',
-      '+faststart',
-      config.outputPath,
+      '-c:v',
+      ffmpegParams['video_codec'],
+      '-preset',
+      ffmpegParams['preset'],
+      '-crf',
+      ffmpegParams['crf'].toString(),
+      '-pix_fmt',
+      ffmpegParams['pix_format'],
     ]);
 
-    print('🚀 Команда FFmpeg: ${args.join(' ')}');
+    if (hasAudio) {
+      args.addAll(['-c:a', 'aac', '-shortest']);
+    }
+
+    args.addAll([
+      '-y',
+      outputPath,
+      '-hide_banner',
+    ]);
+
+    print('🚀 Команда сборки: ${args.join(' ')}');
 
     final result =
         await Process.run(ffmpegPath, args, runInShell: Platform.isWindows);
 
-    print('📊 FFmpeg результат:');
-    print('Exit code: ${result.exitCode}');
-    if (result.stderr.isNotEmpty) print('STDERR: ${result.stderr}');
-
     if (result.exitCode != 0) {
-      throw Exception('Сборка видео не удалась: ${result.stderr}');
+      throw Exception('Ошибка сборки видео: ${result.stderr}');
     }
 
-    final outputFile = File(config.outputPath);
+    final outputFile = File(outputPath);
     if (!await outputFile.exists()) {
-      throw Exception('Выходной файл не был создан: ${config.outputPath}');
+      throw Exception('Выходной файл не был создан: $outputPath');
     }
 
     final outputSize = await outputFile.length();
-    final outputSizeMB = (outputSize / 1024 / 1024);
+    print(
+        '✅ Видео собрано: ${(outputSize / 1024 / 1024).toStringAsFixed(1)} MB');
 
-    print('📹 Видео собрано: ${outputSizeMB.toStringAsFixed(2)} MB');
+    return outputPath;
+  }
 
-    if (outputSize < 500 * 1024) {
-      throw Exception('Видео слишком маленькое - возможна ошибка сборки');
-    }
+  // Дополнительные методы для получения информации о видео
+  Future<Map<String, dynamic>> getVideoInfo(String videoPath) async {
+    return await _analyzeInputVideo(videoPath);
+  }
 
-    return config.outputPath;
+  void stopProcessing() {
+    _isProcessing = false;
+    _updateProgress('Обработка остановлена пользователем', 0.0);
+  }
+
+  void _updateProgress(String message, double percentage) {
+    _progressController.add(message);
+    _percentageController.add(percentage);
   }
 
   Future<void> _cleanupTempFiles() async {
@@ -744,41 +661,16 @@ class VideoProcessingService {
         final tempDir = Directory(_tempBasePath!);
         if (await tempDir.exists()) {
           await tempDir.delete(recursive: true);
-          print('Временные файлы очищены: $_tempBasePath');
+          print('🧹 Временные файлы очищены: $_tempBasePath');
         }
       } catch (e) {
-        print('Ошибка очистки временных файлов: $e');
+        print('⚠️ Ошибка очистки временных файлов: $e');
       }
       _tempBasePath = null;
     }
   }
 
-  void _updateProgress(String message, double percentage) {
-    _progressController.add(message);
-    _percentageController.add(percentage);
-    print('Progress ($percentage%): $message');
-  }
-
-  Future<Map<String, dynamic>> getVideoInfo(String videoPath) async {
-    return await _analyzeInputVideo(videoPath);
-  }
-
-  void stopProcessing() {
-    if (_isProcessing) {
-      _updateProgress('Остановка обработки...', 0.0);
-      ResourceMonitor.instance.updateProgress(
-        processedFrames: 0,
-        totalFrames: _totalFrames,
-        currentStage: 'Остановлено пользователем',
-      );
-      ResourceMonitor.instance.stopMonitoring();
-      _cleanupTempFiles();
-      _isProcessing = false;
-    }
-  }
-
   void dispose() {
-    stopProcessing();
     _progressController.close();
     _percentageController.close();
   }
