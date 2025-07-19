@@ -1,22 +1,22 @@
 name: video_upscaler
-description: "A new Flutter project."
+description: "AI-powered video upscaling application"
 publish_to: 'none'
 
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.6.0 <4.0.0'  # Вместо ^3.7.2
+  sdk: '>=3.6.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
   path_provider: ^2.1.1
-  file_picker: ^6.1.1
+  file_picker: ^8.1.4
   process_run: ^0.12.5+2
   device_info_plus: ^10.1.0
-  # device_vendor_info: ^2.0.4+1
   http: ^1.1.0
+  path: ^1.8.3
 
 dev_dependencies:
   flutter_test:
@@ -26,21 +26,21 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    # Linux assets
+    # Исполняемые файлы по платформам
+    - assets/executables/
     - assets/executables/linux/
+    - assets/executables/macos/
+    - assets/executables/windows/
+    
+    # Модели для всех платформ
     - assets/executables/linux/models-cunet/
     - assets/executables/linux/models-upconv_7_anime_style_art_rgb/
     - assets/executables/linux/models-upconv_7_photo/
-    - assets/executables/linux/manpages/
     
-    # macOS assets  
-    - assets/executables/macos/
     - assets/executables/macos/models-cunet/
     - assets/executables/macos/models-upconv_7_anime_style_art_rgb/
     - assets/executables/macos/models-upconv_7_photo/
     
-    # Windows assets
-    - assets/executables/windows/
     - assets/executables/windows/models-cunet/
     - assets/executables/windows/models-upconv_7_anime_style_art_rgb/
     - assets/executables/windows/models-upconv_7_photo/

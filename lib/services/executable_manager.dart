@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
@@ -13,13 +14,13 @@ class ExecutableManager {
 
   ExecutableManager._internal();
 
-  Directory? executablesDir;
+  Directory? _workingDirectory;
   bool _isInitialized = false;
   bool _useSystemFFmpeg = false;
 
   bool get isInitialized => _isInitialized;
 
-  String get _platformDir {
+  String get _platform {
     if (Platform.isMacOS) return 'macos';
     if (Platform.isWindows) return 'windows';
     return 'linux';
@@ -28,35 +29,38 @@ class ExecutableManager {
   String get _executableExtension => Platform.isWindows ? '.exe' : '';
 
   String get waifu2xPath {
-    _checkInitialization();
+    if (!_isInitialized || _workingDirectory == null) {
+      throw Exception('ExecutableManager не инициализирован!');
+    }
     return path.join(
-        executablesDir!.path, 'waifu2x-ncnn-vulkan$_executableExtension');
+        _workingDirectory!.path, 'waifu2x-ncnn-vulkan$_executableExtension');
   }
 
   String get ffmpegPath {
-    _checkInitialization();
-
-    // Если используем системный FFmpeg
-    if (_useSystemFFmpeg && (Platform.isMacOS || Platform.isLinux)) {
-      return _getSystemFFmpegPath();
+    if (!_isInitialized || _workingDirectory == null) {
+      throw Exception('ExecutableManager не инициализирован!');
     }
 
-    return path.join(executablesDir!.path, 'ffmpeg$_executableExtension');
+    if (_useSystemFFmpeg) {
+      return _getSystemFFmpegPath();
+    }
+    return path.join(_workingDirectory!.path, 'ffmpeg$_executableExtension');
   }
 
   String get ffprobePath {
-    _checkInitialization();
-    return path.join(executablesDir!.path, 'ffprobe$_executableExtension');
+    if (!_isInitialized || _workingDirectory == null) {
+      throw Exception('ExecutableManager не инициализирован!');
+    }
+    return path.join(_workingDirectory!.path, 'ffprobe$_executableExtension');
   }
 
   String get modelsDir {
     _checkInitialization();
-    return executablesDir!.path;
+    return _workingDirectory!.path;
   }
 
   String getModelPath(String modelType) {
     _checkInitialization();
-
     final modelFolders = {
       'cunet': 'models-cunet',
       'anime': 'models-upconv_7_anime_style_art_rgb',
@@ -64,41 +68,7 @@ class ExecutableManager {
     };
 
     final modelFolder = modelFolders[modelType] ?? 'models-cunet';
-    return path.join(executablesDir!.path, modelFolder);
-  }
-
-  // Поиск системного FFmpeg
-  String _getSystemFFmpegPath() {
-    final systemPaths = [
-      '/opt/homebrew/bin/ffmpeg', // Homebrew ARM (M1/M2)
-      '/usr/local/bin/ffmpeg', // Homebrew Intel
-      '/usr/bin/ffmpeg', // Системный
-    ];
-
-    for (final systemPath in systemPaths) {
-      if (File(systemPath).existsSync()) {
-        return systemPath;
-      }
-    }
-
-    // Fallback на локальный если системный не найден
-    return path.join(executablesDir!.path, 'ffmpeg$_executableExtension');
-  }
-
-  Future<int> getInstallationSizeBytes() async {
-    if (!_isInitialized || executablesDir == null) return 0;
-
-    try {
-      int totalSize = 0;
-      await for (final entity in executablesDir!.list(recursive: true)) {
-        if (entity is File) {
-          totalSize += await entity.length();
-        }
-      }
-      return totalSize;
-    } catch (e) {
-      return 0;
-    }
+    return path.join(_workingDirectory!.path, modelFolder);
   }
 
   Future<void> initializeExecutables() async {
@@ -110,18 +80,18 @@ class ExecutableManager {
     print('🔄 Инициализация ExecutableManager...');
 
     try {
-      await _setupExecutablesDirectory();
-      await _extractExecutablesFromAssets();
-
-      // ИСПРАВЛЕНО: устанавливаем флаг ДО установки прав
-      _isInitialized = true;
-
+      await _setupWorkingDirectory();
+      await _extractFromAssets();
       await _makeExecutablesExecutable();
 
-      // Проверяем что все работает и решаем использовать ли системный FFmpeg
-      await _validateAndConfigureExecutables();
+      // Устанавливаем флаг ДО валидации
+      _isInitialized = true;
+      print('✅ ExecutableManager базовая инициализация завершена');
 
-      print('✅ ExecutableManager успешно инициализирован');
+      // Теперь можем безопасно валидировать
+      await _validateExecutables();
+
+      print('✅ ExecutableManager полностью инициализирован');
     } catch (e) {
       print('❌ Ошибка инициализации ExecutableManager: $e');
       _isInitialized = false;
@@ -129,70 +99,54 @@ class ExecutableManager {
     }
   }
 
-  Future<void> _setupExecutablesDirectory() async {
-    final tempDir = await getTemporaryDirectory();
-    executablesDir =
-        Directory(path.join(tempDir.path, 'video_upscaler_executables'));
+  Future<void> _setupWorkingDirectory() async {
+    final cacheDir = await getTemporaryDirectory();
+    _workingDirectory =
+        Directory(path.join(cacheDir.path, 'video_upscaler_executables'));
 
-    if (!await executablesDir!.exists()) {
-      await executablesDir!.create(recursive: true);
+    if (!await _workingDirectory!.exists()) {
+      await _workingDirectory!.create(recursive: true);
     }
 
-    print('📁 Рабочая директория: ${executablesDir!.path}');
+    print('📁 Рабочая директория: ${_workingDirectory!.path}');
   }
 
-  Future<void> _extractExecutablesFromAssets() async {
-    print('📥 Извлечение исполняемых файлов из assets для $_platformDir...');
-
-    final executableFiles = _getExecutableFilesForPlatform();
-
-    for (final executable in executableFiles) {
-      await _extractExecutableFromAssets(executable);
-    }
-
-    await _extractModelsFromAssets();
-  }
-
-  List<String> _getExecutableFilesForPlatform() {
-    switch (_platformDir) {
-      case 'windows':
-        return ['ffmpeg.exe', 'ffprobe.exe', 'waifu2x-ncnn-vulkan.exe'];
-      case 'linux':
-        return ['ffmpeg', 'ffprobe', 'waifu2x-ncnn-vulkan'];
-      case 'macos':
-        return ['ffmpeg', 'waifu2x-ncnn-vulkan'];
-      default:
-        return [];
-    }
-  }
-
-  Future<void> _extractExecutableFromAssets(String fileName) async {
+  Future<void> _extractFromAssets() async {
     try {
-      final assetPath = 'assets/executables/$_platformDir/$fileName';
-      final targetPath = path.join(executablesDir!.path, fileName);
+      print('📥 Извлечение исполняемых файлов из assets для $_platform...');
+
+      // Извлекаем исполняемые файлы
+      await _extractExecutable('ffmpeg');
+      if (!Platform.isMacOS) {
+        await _extractExecutable('ffprobe');
+      }
+      await _extractExecutable('waifu2x-ncnn-vulkan');
+
+      // Извлекаем папки с моделями
+      await _extractModelFolder('models-cunet');
+      await _extractModelFolder('models-upconv_7_anime_style_art_rgb');
+      await _extractModelFolder('models-upconv_7_photo');
+
+      print('✅ Все файлы успешно извлечены');
+    } catch (e) {
+      print('❌ Ошибка извлечения файлов: $e');
+      throw Exception('Не удалось извлечь исполняемые файлы: $e');
+    }
+  }
+
+  Future<void> _extractExecutable(String fileName) async {
+    try {
+      final assetPath =
+          'assets/executables/$_platform/$fileName$_executableExtension';
+      final targetPath =
+          path.join(_workingDirectory!.path, '$fileName$_executableExtension');
 
       print('📦 Извлечение $fileName...');
 
-      final targetFile = File(targetPath);
-      if (await targetFile.exists()) {
-        try {
-          final assetData = await rootBundle.load(assetPath);
-          final existingSize = await targetFile.length();
+      final data = await rootBundle.load(assetPath);
+      final bytes = data.buffer.asUint8List();
 
-          if (existingSize == assetData.lengthInBytes) {
-            final sizeMB = (existingSize / 1024 / 1024).toStringAsFixed(1);
-            print('✅ $fileName уже извлечен ($sizeMB MB)');
-            return;
-          }
-        } catch (e) {
-          print('⚠️ Проблема при проверке $fileName: $e');
-        }
-      }
-
-      final byteData = await rootBundle.load(assetPath);
-      final bytes = byteData.buffer.asUint8List();
-
-      await targetFile.writeAsBytes(bytes);
+      await File(targetPath).writeAsBytes(bytes);
 
       final sizeMB = (bytes.length / 1024 / 1024).toStringAsFixed(1);
       print('✅ $fileName извлечен: $sizeMB MB');
@@ -202,72 +156,107 @@ class ExecutableManager {
     }
   }
 
-  Future<void> _extractModelsFromAssets() async {
-    print('📥 Извлечение моделей ИИ...');
-
-    final modelDirs = [
-      'models-cunet',
-      'models-upconv_7_anime_style_art_rgb',
-      'models-upconv_7_photo'
-    ];
-
-    for (final modelDir in modelDirs) {
-      await _extractModelDirectory(modelDir);
-    }
-  }
-
-  Future<void> _extractModelDirectory(String modelDirName) async {
+  Future<void> _extractModelFolder(String folderName) async {
     try {
-      final targetDir =
-          Directory(path.join(executablesDir!.path, modelDirName));
-      if (!await targetDir.exists()) {
-        await targetDir.create(recursive: true);
-      }
+      // Создаём папку для моделей
+      final modelsDir =
+          Directory(path.join(_workingDirectory!.path, folderName));
+      await modelsDir.create(recursive: true);
 
-      final assetManifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-      final modelAssets = assetManifest
-          .listAssets()
-          .where((key) =>
-              key.startsWith('assets/executables/$_platformDir/$modelDirName/'))
+      // Получаем список файлов в папке модели
+      final manifestContent = await rootBundle.loadString('AssetManifest.json');
+      final Map<String, dynamic> manifestMap = json.decode(manifestContent);
+
+      // Фильтруем файлы по папке
+      final modelFiles = manifestMap.keys
+          .where((String key) =>
+              key.startsWith('assets/executables/$_platform/$folderName/'))
+          .where((String key) => !key.endsWith('/')) // Исключаем папки
           .toList();
 
-      print(
-          '📁 Извлечение $modelDirName: найдено ${modelAssets.length} файлов');
+      print('📁 Найдено файлов в $folderName: ${modelFiles.length}');
 
-      for (final assetKey in modelAssets) {
-        await _extractModelFile(assetKey, modelDirName);
-      }
-    } catch (e) {
-      print('❌ Ошибка извлечения модели $modelDirName: $e');
-    }
-  }
+      // Извлекаем каждый файл
+      int extractedCount = 0;
+      for (final assetPath in modelFiles) {
+        try {
+          final fileName = path.basename(assetPath);
+          final targetPath = path.join(modelsDir.path, fileName);
 
-  Future<void> _extractModelFile(String assetKey, String modelDirName) async {
-    try {
-      final fileName = path.basename(assetKey);
-      final targetPath =
-          path.join(executablesDir!.path, modelDirName, fileName);
-      final targetFile = File(targetPath);
+          final data = await rootBundle.load(assetPath);
+          final bytes = data.buffer.asUint8List();
 
-      if (await targetFile.exists()) {
-        final assetData = await rootBundle.load(assetKey);
-        final existingSize = await targetFile.length();
+          await File(targetPath).writeAsBytes(bytes);
 
-        if (existingSize == assetData.lengthInBytes) {
-          return;
+          final sizeMB = (bytes.length / 1024 / 1024).toStringAsFixed(1);
+          print('📄 Извлечён: $fileName ($sizeMB MB)');
+          extractedCount++;
+        } catch (e) {
+          print('❌ Ошибка извлечения ${path.basename(assetPath)}: $e');
         }
       }
 
-      final byteData = await rootBundle.load(assetKey);
-      final bytes = byteData.buffer.asUint8List();
+      // Если файлы не извлечены, пытаемся найти основные файлы
+      if (extractedCount == 0) {
+        print('🔄 Fallback - ищем базовые файлы модели $folderName...');
+        await _extractBasicModelFiles(folderName, modelsDir);
+      }
 
-      await targetFile.writeAsBytes(bytes);
+      print('✅ Папка $folderName успешно извлечена: $extractedCount файлов');
     } catch (e) {
-      print('  ❌ Ошибка извлечения файла модели $assetKey: $e');
+      print('❌ Ошибка извлечения папки $folderName: $e');
+      throw Exception('Не удалось извлечь папку $folderName: $e');
     }
   }
 
-  // ИСПРАВЛЕННЫЙ метод установки прав с решением macOS quarantine
+  Future<void> _extractBasicModelFiles(
+      String folderName, Directory modelsDir) async {
+    // Основные файлы для каждой модели
+    final baseFiles = [
+      'noise0_scale2.0x_model.bin',
+      'noise0_scale2.0x_model.param',
+      'noise1_scale2.0x_model.bin',
+      'noise1_scale2.0x_model.param',
+      'noise2_scale2.0x_model.bin',
+      'noise2_scale2.0x_model.param',
+      'noise3_scale2.0x_model.bin',
+      'noise3_scale2.0x_model.param',
+      'scale2.0x_model.bin',
+      'scale2.0x_model.param',
+      'noise0_model.bin',
+      'noise0_model.param',
+      'noise1_model.bin',
+      'noise1_model.param',
+      'noise2_model.bin',
+      'noise2_model.param',
+      'noise3_model.bin',
+      'noise3_model.param',
+    ];
+
+    bool foundAny = false;
+
+    for (final baseFile in baseFiles) {
+      try {
+        final assetPath = 'assets/executables/$_platform/$folderName/$baseFile';
+        final data = await rootBundle.load(assetPath);
+        final bytes = data.buffer.asUint8List();
+
+        final targetPath = path.join(modelsDir.path, baseFile);
+        await File(targetPath).writeAsBytes(bytes);
+
+        final sizeMB = (bytes.length / 1024 / 1024).toStringAsFixed(1);
+        print('📄 Найден базовый файл: $baseFile ($sizeMB MB)');
+        foundAny = true;
+      } catch (e) {
+        // Файл не найден, продолжаем
+      }
+    }
+
+    if (!foundAny) {
+      print('⚠️ Не найдены .bin файлы для $folderName');
+    }
+  }
+
   Future<void> _makeExecutablesExecutable() async {
     if (Platform.isWindows) {
       print('ℹ️ Windows: права доступа устанавливаются автоматически');
@@ -278,220 +267,419 @@ class ExecutableManager {
       print('🔧 Установка прав на выполнение...');
 
       final executables = [
-        path.join(
-            executablesDir!.path, 'waifu2x-ncnn-vulkan$_executableExtension'),
-        path.join(executablesDir!.path, 'ffmpeg$_executableExtension'),
+        path.join(_workingDirectory!.path,
+            'waifu2x-ncnn-vulkan$_executableExtension'),
+        path.join(_workingDirectory!.path, 'ffmpeg$_executableExtension'),
       ];
 
-      if (Platform.isLinux) {
+      if (!Platform.isMacOS) {
         executables.add(
-            path.join(executablesDir!.path, 'ffprobe$_executableExtension'));
+            path.join(_workingDirectory!.path, 'ffprobe$_executableExtension'));
       }
 
       for (final execPath in executables) {
         if (await File(execPath).exists()) {
-          await _fixExecutablePermissions(execPath);
+          await _makeExecutableFile(execPath);
         }
       }
+
+      print('✅ Права на выполнение установлены');
     } catch (e) {
       print('❌ Ошибка при установке прав доступа: $e');
     }
   }
 
-  // НОВЫЙ МЕТОД: Агрессивное исправление прав для macOS
-  Future<void> _fixExecutablePermissions(String execPath) async {
-    final fileName = path.basename(execPath);
-
+  Future<void> _makeExecutableFile(String filePath) async {
     try {
-      print('🔧 Исправление прав для $fileName...');
+      final fileName = path.basename(filePath);
 
       if (Platform.isMacOS) {
-        // 1. Убираем ALL extended attributes (включая quarantine)
-        await Process.run('xattr', ['-c', execPath]).catchError(
-            (e) => ProcessResult(0, 0, '', 'не удалось очистить атрибуты'));
-
-        // 2. Убираем quarantine специально (если остался)
-        await Process.run('xattr', ['-d', 'com.apple.quarantine', execPath])
-            .catchError(
-                (e) => ProcessResult(0, 0, '', 'quarantine уже удален'));
-
-        print('✅ Extended attributes очищены для $fileName');
+        // Убираем quarantine атрибуты
+        await Process.run('xattr', ['-c', filePath])
+            .catchError((e) => ProcessResult(0, 0, '', ''));
       }
 
-      // 3. Устанавливаем права 755 (rwxr-xr-x)
-      var result = await Process.run('chmod', ['755', execPath]);
-      if (result.exitCode == 0) {
-        print('✅ Права 755 установлены для $fileName');
-      } else {
-        print('⚠️ Ошибка chmod для $fileName: ${result.stderr}');
-      }
-
-      // 4. Дополнительная установка owner права
-      await Process.run('chmod', ['u+x', execPath]);
-
-      // 5. Проверяем результат
-      result = await Process.run('ls', ['-la', execPath]);
-      print('📋 Права для $fileName: ${result.stdout.toString().trim()}');
+      // Устанавливаем права на выполнение
+      await Process.run('chmod', ['+x', filePath]);
+      print('✅ Права установлены для $fileName');
     } catch (e) {
-      print('❌ Ошибка исправления прав для $fileName: $e');
+      print('⚠️ Ошибка установки прав для ${path.basename(filePath)}: $e');
     }
   }
 
-  // НОВЫЙ МЕТОД: Проверка и настройка исполняемых файлов
-  Future<void> _validateAndConfigureExecutables() async {
+  Future<void> _validateExecutables() async {
     print('🔍 Проверка исполняемых файлов...');
 
-    // Проверяем FFmpeg
-    final localFFmpegPath =
-        path.join(executablesDir!.path, 'ffmpeg$_executableExtension');
-    final ffmpegWorks = await _testExecutable(localFFmpegPath, ['-version']);
+    try {
+      // Проверка FFmpeg
+      final ffmpegPath =
+          path.join(_workingDirectory!.path, 'ffmpeg$_executableExtension');
+      final ffmpegWorks = await _testExecutable(ffmpegPath, ['-version']);
 
-    if (!ffmpegWorks && (Platform.isMacOS || Platform.isLinux)) {
-      print('⚠️ Локальный FFmpeg не работает, ищем системный...');
+      if (!ffmpegWorks && (Platform.isMacOS || Platform.isLinux)) {
+        print('⚠️ Локальный FFmpeg не работает, проверяем системный...');
 
-      final systemFFmpeg = _getSystemFFmpegPath();
-      if (systemFFmpeg != localFFmpegPath) {
-        final systemWorks = await _testExecutable(systemFFmpeg, ['-version']);
-        if (systemWorks) {
-          _useSystemFFmpeg = true;
-          print('✅ Будет использоваться системный FFmpeg: $systemFFmpeg');
-        } else {
-          print('❌ Системный FFmpeg тоже не работает');
+        final systemFFmpeg = _getSystemFFmpegPath();
+        if (await File(systemFFmpeg).exists()) {
+          final systemWorks = await _testExecutable(systemFFmpeg, ['-version']);
+          if (systemWorks) {
+            _useSystemFFmpeg = true;
+            print('✅ Используется системный FFmpeg: $systemFFmpeg');
+          }
         }
       }
-    } else if (ffmpegWorks) {
-      print('✅ Локальный FFmpeg работает корректно');
-    }
 
-    // Проверяем waifu2x
-    final waifu2xWorks = await _testExecutable(waifu2xPath, ['-h']);
-    if (waifu2xWorks) {
-      print('✅ waifu2x работает корректно');
-    } else {
-      print('❌ waifu2x не работает');
+      // Проверка waifu2x
+      final waifu2xPath = path.join(
+          _workingDirectory!.path, 'waifu2x-ncnn-vulkan$_executableExtension');
+      final waifu2xWorks = await _testExecutable(waifu2xPath, ['-h']);
+      if (!waifu2xWorks) {
+        print('⚠️ waifu2x может не работать корректно');
+      }
+
+      // Проверяем модели
+      await _validateModels();
+
+      print('✅ Валидация исполняемых файлов завершена');
+    } catch (e) {
+      print('⚠️ Ошибка валидации: $e');
     }
   }
 
-  // НОВЫЙ МЕТОД: Тест исполняемого файла
+  Future<void> _validateModels() async {
+    print('🔍 Проверка моделей ИИ...');
+
+    final modelDirs = [
+      'models-cunet',
+      'models-upconv_7_anime_style_art_rgb',
+      'models-upconv_7_photo'
+    ];
+
+    for (final modelDir in modelDirs) {
+      final modelPath = path.join(_workingDirectory!.path, modelDir);
+      final dir = Directory(modelPath);
+
+      if (!await dir.exists()) {
+        print('❌ Папка модели не найдена: $modelDir');
+        continue;
+      }
+
+      final files = await dir.list().toList();
+      final binFiles = files.where((f) => f.path.endsWith('.bin')).toList();
+      final paramFiles = files.where((f) => f.path.endsWith('.param')).toList();
+
+      print(
+          '📁 $modelDir: .bin=${binFiles.length}, .param=${paramFiles.length}');
+
+      if (binFiles.isEmpty && paramFiles.isNotEmpty) {
+        print('⚠️ Отсутствуют .bin файлы в $modelDir - только .param файлы');
+      } else if (binFiles.isNotEmpty && paramFiles.isNotEmpty) {
+        print('✅ $modelDir: найдены и .bin, и .param файлы');
+      } else {
+        print('❌ $modelDir: модели не найдены');
+      }
+    }
+  }
+
   Future<bool> _testExecutable(String execPath, List<String> args) async {
     try {
       if (!await File(execPath).exists()) {
         return false;
       }
 
-      final result =
-          await Process.run(execPath, args).timeout(Duration(seconds: 10));
+      final result = await Process.run(execPath, args)
+          .timeout(const Duration(seconds: 10));
 
-      return result.exitCode == 0 ||
-          result.exitCode == 1; // FFmpeg возвращает 1 при -version
+      return result.exitCode == 0 || result.exitCode == 1;
     } catch (e) {
-      print('❌ Ошибка тестирования ${path.basename(execPath)}: $e');
       return false;
     }
   }
 
-  Future<bool> validateInstallation() async {
-    if (!_isInitialized) {
-      print('❌ ExecutableManager не инициализирован');
-      return false;
-    }
-
-    print('🔍 Проверка установки исполняемых файлов...');
-
-    // Проверяем основные исполняемые файлы
-    final executables = [
-      {'path': waifu2xPath, 'name': 'waifu2x'},
-      {'path': ffmpegPath, 'name': 'FFmpeg'},
+  String _getSystemFFmpegPath() {
+    final systemPaths = [
+      '/opt/homebrew/bin/ffmpeg',
+      '/usr/local/bin/ffmpeg',
+      '/usr/bin/ffmpeg',
     ];
 
-    if (Platform.isLinux && !_useSystemFFmpeg) {
-      executables.add({'path': ffprobePath, 'name': 'FFprobe'});
-    }
-
-    bool allValid = true;
-
-    for (final exec in executables) {
-      final file = File(exec['path']!);
-      if (!await file.exists()) {
-        print('❌ ${exec['name']} не найден: ${exec['path']}');
-        allValid = false;
-        continue;
+    for (final systemPath in systemPaths) {
+      if (File(systemPath).existsSync()) {
+        return systemPath;
       }
-
-      final size = await file.length();
-      if (size < 1000) {
-        print('❌ ${exec['name']} слишком мал: ${size} bytes');
-        allValid = false;
-        continue;
-      }
-
-      print('✅ ${exec['name']}: ${(size / 1024 / 1024).toStringAsFixed(1)} MB');
     }
 
-    // Проверяем модели
-    if (!await _validateModelFiles()) {
-      print('❌ Файлы модели не найдены');
-      allValid = false;
-    }
-
-    // Функциональный тест FFmpeg
-    if (!await _testExecutable(ffmpegPath, ['-version'])) {
-      print('❌ FFmpeg не может быть запущен');
-      allValid = false;
-    } else {
-      print('✅ FFmpeg функциональный тест пройден');
-    }
-
-    if (allValid) {
-      print('✅ Все файлы найдены и готовы к использованию');
-    } else {
-      print('❌ Обнаружены проблемы с установкой');
-    }
-
-    return allValid;
+    return path.join(_workingDirectory!.path, 'ffmpeg$_executableExtension');
   }
 
-  Future<bool> _validateModelFiles() async {
-    final modelPath = getModelPath('cunet');
+  // НОВЫЕ МЕТОДЫ ДЛЯ ОПТИМИЗАЦИИ
 
-    if (!await Directory(modelPath).exists()) {
-      return false;
+  /// Получает оптимальные параметры waifu2x для данного железа
+  List<String> getOptimalWaifu2xArgs({
+    required String inputPath,
+    required String outputPath,
+    required String modelPath,
+    required Map<String, dynamic> systemCapabilities,
+    int scale = 2,
+    int noise = 0,
+    bool useGPU = true,
+    bool enableTTA = false,
+    String format = 'png',
+  }) {
+    final args = <String>[];
+
+    // Входные и выходные пути
+    args.addAll(['-i', inputPath, '-o', outputPath]);
+
+    // Уровень шума и масштаб
+    args.addAll(['-n', noise.toString(), '-s', scale.toString()]);
+
+    // Путь к модели
+    args.addAll(['-m', modelPath]);
+
+    // GPU/CPU выбор
+    final gpuId = _getOptimalGPUId(systemCapabilities, useGPU);
+    args.addAll(['-g', gpuId.toString()]);
+
+    // Размер тайла
+    final tileSize = _getOptimalTileSize(systemCapabilities, scale);
+    args.addAll(['-t', tileSize.toString()]);
+
+    // Потоки
+    final threadConfig = _getOptimalThreadConfig(systemCapabilities);
+    args.addAll(['-j', threadConfig]);
+
+    // TTA режим (для качества vs скорости)
+    if (enableTTA) {
+      args.add('-x');
     }
 
-    final modelFiles = await Directory(modelPath)
-        .list()
-        .where((entity) =>
-            entity is File &&
-            (entity.path.endsWith('.bin') || entity.path.endsWith('.param')))
-        .cast<File>()
-        .toList();
+    // Формат вывода
+    args.addAll(['-f', format]);
 
-    return modelFiles.isNotEmpty;
+    // Verbose вывод
+    args.add('-v');
+
+    return args;
+  }
+
+  /// Определяет оптимальный GPU ID
+  int _getOptimalGPUId(Map<String, dynamic> capabilities, bool useGPU) {
+    if (!useGPU) return -1;
+
+    final hasGPU = capabilities['has_vulkan'] as bool? ?? false;
+    final gpuCount = (capabilities['available_gpus'] as List?)?.length ?? 0;
+
+    if (hasGPU && gpuCount > 0) {
+      return 0; // Используем первый GPU
+    }
+
+    return -1; // Fallback на CPU
+  }
+
+  /// Определяет оптимальный размер тайла
+  int _getOptimalTileSize(Map<String, dynamic> capabilities, int scale) {
+    final memoryInfo =
+        capabilities['memory_info'] as Map<String, dynamic>? ?? {};
+    final totalMemoryGB = memoryInfo['total_gb'] as int? ?? 8;
+    final hasGPU = capabilities['has_vulkan'] as bool? ?? false;
+
+    // Базовый размер тайла
+    int baseTileSize = 32;
+
+    if (hasGPU) {
+      // Для GPU оптимизируем под память
+      if (totalMemoryGB >= 32) {
+        baseTileSize = 400;
+      } else if (totalMemoryGB >= 16) {
+        baseTileSize = 256;
+      } else if (totalMemoryGB >= 8) {
+        baseTileSize = 128;
+      } else {
+        baseTileSize = 64;
+      }
+    } else {
+      // Для CPU меньшие тайлы
+      if (totalMemoryGB >= 16) {
+        baseTileSize = 128;
+      } else if (totalMemoryGB >= 8) {
+        baseTileSize = 64;
+      } else {
+        baseTileSize = 32;
+      }
+    }
+
+    // Корректировка под масштаб
+    if (scale >= 4) {
+      baseTileSize = (baseTileSize * 0.7).round();
+    }
+
+    return baseTileSize;
+  }
+
+  /// Определяет оптимальную конфигурацию потоков
+  String _getOptimalThreadConfig(Map<String, dynamic> capabilities) {
+    final cpuCores = capabilities['cpu_cores'] as int? ?? 4;
+    final hasGPU = capabilities['has_vulkan'] as bool? ?? false;
+
+    int loadThreads, procThreads, saveThreads;
+
+    if (hasGPU) {
+      // Для GPU меньше потоков нужно
+      loadThreads = (cpuCores * 0.25).round().clamp(1, 4);
+      procThreads = (cpuCores * 0.5).round().clamp(1, 8);
+      saveThreads = (cpuCores * 0.25).round().clamp(1, 4);
+    } else {
+      // Для CPU используем больше потоков
+      loadThreads = (cpuCores * 0.3).round().clamp(1, 4);
+      procThreads = (cpuCores * 0.6).round().clamp(2, 16);
+      saveThreads = (cpuCores * 0.3).round().clamp(1, 4);
+    }
+
+    return '$loadThreads:$procThreads:$saveThreads';
+  }
+
+  /// Получает рекомендуемые настройки для видео
+  Map<String, dynamic> getRecommendedVideoSettings({
+    required int videoWidth,
+    required int videoHeight,
+    required double videoDuration,
+    required Map<String, dynamic> systemCapabilities,
+  }) {
+    final totalPixels = videoWidth * videoHeight;
+    final memoryInfo =
+        systemCapabilities['memory_info'] as Map<String, dynamic>? ?? {};
+    final memoryGB = memoryInfo['total_gb'] as int? ?? 8;
+    final hasGPU = systemCapabilities['has_vulkan'] as bool? ?? false;
+
+    // Определяем оптимальный масштаб
+    int recommendedScale = 2;
+    if (totalPixels <= 1920 * 1080 && memoryGB >= 16) {
+      recommendedScale = 4; // 4K для Full HD и выше
+    } else if (totalPixels <= 1280 * 720 && memoryGB >= 8) {
+      recommendedScale = 4; // 4K для HD
+    }
+
+    // Определяем noise level
+    int recommendedNoise = 0;
+    if (totalPixels <= 1280 * 720) {
+      recommendedNoise = 1; // Больше шумоподавления для низких разрешений
+    }
+
+    // Определяем формат
+    String recommendedFormat = 'png';
+    if (videoDuration > 30) {
+      recommendedFormat = 'jpg'; // Для длинных видео - компрессия
+    }
+
+    return {
+      'scale': recommendedScale,
+      'noise': recommendedNoise,
+      'format': recommendedFormat,
+      'use_gpu': hasGPU,
+      'enable_tta': false, // Отключено для скорости
+      'estimated_time_minutes': _estimateProcessingTime(
+        videoWidth * videoHeight,
+        videoDuration,
+        recommendedScale,
+        systemCapabilities,
+      ),
+    };
+  }
+
+  /// Оценивает время обработки
+  double _estimateProcessingTime(
+    int totalPixels,
+    double videoDuration,
+    int scale,
+    Map<String, dynamic> capabilities,
+  ) {
+    final hasGPU = capabilities['has_vulkan'] as bool? ?? false;
+    final cpuCores = capabilities['cpu_cores'] as int? ?? 4;
+
+    // Базовое время на пиксель (в микросекундах)
+    double baseTimePerPixel = hasGPU ? 0.1 : 0.5;
+
+    // Корректировка под масштаб
+    baseTimePerPixel *= scale * scale;
+
+    // Корректировка под CPU
+    if (!hasGPU) {
+      baseTimePerPixel /= (cpuCores / 4).clamp(0.5, 2.0);
+    }
+
+    // Общее время
+    final totalTimeSeconds =
+        (totalPixels * videoDuration * baseTimePerPixel) / 1000000;
+
+    return totalTimeSeconds / 60; // Возвращаем в минутах
   }
 
   Future<void> cleanupExecutables() async {
-    if (executablesDir != null && await executablesDir!.exists()) {
-      await executablesDir!.delete(recursive: true);
+    if (_workingDirectory != null && await _workingDirectory!.exists()) {
+      await _workingDirectory!.delete(recursive: true);
       _isInitialized = false;
       _useSystemFFmpeg = false;
-      print('Очистка исполняемых файлов завершена');
+      print('🧹 Временные файлы очищены: ${_workingDirectory!.path}');
     }
   }
 
   void _checkInitialization() {
-    if (executablesDir == null || !_isInitialized) {
+    if (!_isInitialized) {
       throw Exception(
           'ExecutableManager не инициализирован! Вызовите initializeExecutables() сначала.');
     }
   }
 
-  // Публичный метод для получения информации о конфигурации
+  Future<bool> validateInstallation() async {
+    if (!_isInitialized) return false;
+
+    try {
+      // Проверяем основные файлы
+      final waifu2xExists = await File(waifu2xPath).exists();
+      final ffmpegExists = await File(ffmpegPath).exists();
+
+      if (!waifu2xExists || !ffmpegExists) {
+        return false;
+      }
+
+      // Проверяем модели
+      final modelDirs = [
+        'models-cunet',
+        'models-upconv_7_anime_style_art_rgb',
+        'models-upconv_7_photo'
+      ];
+
+      for (final modelDir in modelDirs) {
+        final modelPath = path.join(_workingDirectory!.path, modelDir);
+        final dir = Directory(modelPath);
+
+        if (!await dir.exists()) {
+          return false;
+        }
+
+        final files = await dir.list().toList();
+        final modelFiles = files
+            .where((f) => f.path.endsWith('.bin') || f.path.endsWith('.param'))
+            .toList();
+
+        if (modelFiles.isEmpty) {
+          return false;
+        }
+      }
+
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   Map<String, dynamic> getConfigurationInfo() {
     return {
       'isInitialized': _isInitialized,
       'useSystemFFmpeg': _useSystemFFmpeg,
-      'executablesDir': executablesDir?.path,
-      'platform': _platformDir,
+      'workingDirectory': _workingDirectory?.path,
+      'platform': _platform,
       'ffmpegPath': _isInitialized ? ffmpegPath : null,
       'waifu2xPath': _isInitialized ? waifu2xPath : null,
     };

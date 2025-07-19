@@ -55,3 +55,31 @@ assets/executables/windows/models-cunet/
 assets/executables/windows/models-upconv_7_anime_style_art_rgb/
 assets/executables/windows/models-upconv_7_photo/.DS_Store
 **/.DS_Store
+
+
+# Исполняемые файлы (большие бинарки)
+assets/executables/*/ffmpeg*
+assets/executables/*/waifu2x*
+assets/executables/**/*.exe
+assets/executables/**/*.bin
+
+# Модели ИИ (если они большие)
+assets/executables/*/models-*/
+**/*.bin
+
+# Временные файлы
+*.tmp
+*.temp
+build/
+.dart_tool/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
